@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { auth } from '@/lib/auth';
 
 // Helper function to validate if a name is a celebrity using LLM
 async function validateCelebrityName(name) {

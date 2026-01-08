@@ -42,6 +42,7 @@ export default function TrendsPage() {
   // Load saved trends from database
   const fetchSavedTrends = async () => {
     setLoadingSaved(true);
+    setError(null);
     try {
       const url = searchFilter
         ? `/api/trends?search_query=${encodeURIComponent(searchFilter)}`
@@ -49,13 +50,15 @@ export default function TrendsPage() {
       const response = await fetch(url);
 
       if (!response.ok) {
-        throw new Error(`Failed to fetch saved trends: ${response.statusText}`);
+        const errorData = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(errorData.error || `Failed to fetch saved trends: ${response.statusText}`);
       }
 
       const data = await response.json();
       setSavedTrends(data.trends || []);
     } catch (err) {
       console.error("Error fetching saved trends:", err);
+      setError(err.message || "Failed to load trends from database");
     } finally {
       setLoadingSaved(false);
     }
