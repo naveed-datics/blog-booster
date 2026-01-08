@@ -2,6 +2,45 @@ import { NextResponse } from "next/server";
 import { query } from "@/lib/db";
 import { auth } from "@/lib/auth";
 
+// Function to inject content quality guidelines into prompt template
+function injectQualityGuidelines(promptTemplate) {
+  const qualityGuidelines = `
+
+CRITICAL CONTENT QUALITY RULES (MUST FOLLOW):
+- NO REPETITION: Never repeat the same information in multiple sections. Each section must provide NEW, UNIQUE information.
+- BE SPECIFIC: Use concrete details, dates, facts, and examples from the context. Avoid vague statements like "likely", "may have", "probably" unless context explicitly supports uncertainty.
+- ADD DEPTH: Each section should be substantial (150-300 words minimum). Provide comprehensive information, not surface-level summaries.
+- SMOOTH TRANSITIONS: Use connecting phrases between paragraphs and sections to create natural flow.
+- CONCRETE EXAMPLES: Include specific details, anecdotes, or case studies from the context when available.
+- UNIQUE CONTENT PER SECTION: If information appears in one section, do NOT repeat it in another. Reference it briefly if needed, but don't duplicate.
+- AVOID FILLER: Every sentence must add value. Remove generic statements that don't provide specific information.
+- SPECIFIC FAQs: Each FAQ should answer a specific, useful question with detailed information (50-100 words per answer).
+- SPECIFIC RELATED QUERIES: Each query should be a real search term someone might use, with detailed answers (50-100 words per answer).
+`;
+
+  // Try to inject guidelines after "Instructions:" or "Content Requirements:" sections
+  if (
+    promptTemplate.includes("Instructions:") ||
+    promptTemplate.includes("Content Requirements:")
+  ) {
+    // Look for pattern: Instructions: ... (Content Requirements:|SEO Optimization:|Write Content)
+    const pattern =
+      /(Instructions:.*?)(Content Requirements:|SEO Optimization:|Write Content)/s;
+    if (pattern.test(promptTemplate)) {
+      return promptTemplate.replace(pattern, `$1${qualityGuidelines}$2`);
+    }
+    // Try after Content Requirements if it exists
+    const pattern2 =
+      /(Content Requirements:.*?)(SEO Optimization:|Write Content|Output Format:)/s;
+    if (pattern2.test(promptTemplate)) {
+      return promptTemplate.replace(pattern2, `$1${qualityGuidelines}$2`);
+    }
+  }
+
+  // If no clear insertion point, prepend to the template
+  return qualityGuidelines + "\n\n" + promptTemplate;
+}
+
 // POST endpoint to write blog post
 export async function POST(request) {
   try {
@@ -172,6 +211,10 @@ Content Requirements:
 - Include an introduction, main content sections, and a conclusion
 - Write in a natural, human tone that engages readers
 - Ensure all information is accurate based on the provided context
+- Each section should be substantial (150-300 words minimum) with specific details
+- Avoid repeating the same information across multiple sections
+- Use concrete examples and specific details from the context
+- Create smooth transitions between paragraphs and sections
 
 Output Format:
 - Output clean HTML markup
@@ -220,6 +263,10 @@ Output Format:
       );
     }
 
+    // Inject quality guidelines into the prompt template (works for both custom and default)
+    promptTemplate = injectQualityGuidelines(promptTemplate);
+    console.log("Quality guidelines injected into prompt template");
+
     let blogContent = "";
 
     // Use Azure OpenAI if available, otherwise use OpenAI
@@ -257,6 +304,9 @@ Output Format:
           ],
           temperature: 0.7,
           top_p: 0.9,
+          presence_penalty: 0.3,
+          frequency_penalty: 0.2,
+          max_tokens: 4000,
         }),
       });
 
@@ -307,6 +357,9 @@ Output Format:
             ],
             temperature: 0.7,
             top_p: 0.9,
+            presence_penalty: 0.3,
+            frequency_penalty: 0.2,
+            max_tokens: 4000,
           }),
         }
       );

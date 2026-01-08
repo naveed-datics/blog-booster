@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { auth } from "@/lib/auth";
 
 // WordPress Configuration
 const WP_BASE =
@@ -16,7 +17,7 @@ function slugify(s) {
 }
 
 // Find image using existing image search API
-async function findImage(celebrityName) {
+async function findImage(celebrityName, cookies = "") {
   try {
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
     const controller = new AbortController();
@@ -26,12 +27,24 @@ async function findImage(celebrityName) {
       `${baseUrl}/api/image-search?q=${encodeURIComponent(
         celebrityName
       )}&limit=1`,
-      { signal: controller.signal }
+      { 
+        signal: controller.signal,
+        headers: {
+          Cookie: cookies,
+        },
+      }
     );
 
     clearTimeout(timeoutId);
 
-    if (response.status === 200) {
+    if (response.ok) {
+      // Check if response is JSON (not HTML error page)
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        const errorText = await response.text();
+        console.error("Image search API returned non-JSON response:", errorText.substring(0, 200));
+        return null;
+      }
       const data = await response.json();
       if (data && typeof data === "object") {
         if (data.url) {
@@ -44,6 +57,9 @@ async function findImage(celebrityName) {
           }
         }
       }
+    } else {
+      const errorText = await response.text();
+      console.error(`Image search API error: ${response.status}`, errorText.substring(0, 200));
     }
     return null;
   } catch (error) {
@@ -216,8 +232,11 @@ export async function GET(request) {
 
     const celebrityName = title;
 
+    // Get cookies from the request to pass to image search API
+    const cookies = request.headers.get("cookie") || "";
+
     // Step 2: Find image
-    const imageUrl = await findImage(celebrityName);
+    const imageUrl = await findImage(celebrityName, cookies);
 
     // Step 3: Generate SEO title & description
     const { seoTitle, metaDescription } = await generateSEOContent(
@@ -235,13 +254,129 @@ export async function GET(request) {
       Accept: "application/json",
     };
 
-    // Step 4: Create post
+    // Step 4: Upload image first if available - REQUIRED before post creation
+    let mediaId = null;
+    if (imageUrl) {
+      try {
+        // Download image
+        const imgController = new AbortController();
+        const imgTimeoutId = setTimeout(() => imgController.abort(), 10000);
+        const imgResponse = await fetch(imageUrl, {
+          signal: imgController.signal,
+        });
+        clearTimeout(imgTimeoutId);
+
+        if (!imgResponse.ok) {
+          return NextResponse.json(
+            {
+              error: "Failed to download image",
+              message: `Image download failed: ${imgResponse.statusText}`,
+            },
+            { status: 400 }
+          );
+        }
+
+        const imgData = await imgResponse.arrayBuffer();
+        const contentType =
+          imgResponse.headers.get("Content-Type") || "image/jpeg";
+        const extension =
+          {
+            "image/jpeg": "jpg",
+            "image/png": "png",
+            "image/webp": "webp",
+            "image/gif": "gif",
+            "image/bmp": "bmp",
+          }[contentType] || "jpg";
+
+        const randomNumber = Math.floor(Math.random() * 9000) + 1000;
+        const filename = `${title
+          .toLowerCase()
+          .replace(/\s+/g, "-")}-${randomNumber}.${extension}`;
+
+        const mediaHeaders = {
+          Authorization: WP_AUTH_HEADER,
+          "Content-Disposition": `attachment; filename="${filename}"`,
+          "Content-Type": contentType,
+        };
+
+        // Upload image - REQUIRED for post creation
+        const mediaResponse = await fetch(`${WP_BASE}/media`, {
+          method: "POST",
+          headers: mediaHeaders,
+          body: Buffer.from(imgData),
+        });
+
+        if (mediaResponse.status !== 201) {
+          const errorText = await mediaResponse.text();
+          return NextResponse.json(
+            {
+              error: "Failed to upload featured image",
+              message: `Image upload failed: ${mediaResponse.status} ${mediaResponse.statusText}. ${errorText.substring(0, 200)}`,
+            },
+            { status: 400 }
+          );
+        }
+
+        const mediaData = await mediaResponse.json();
+        mediaId = mediaData.id;
+        console.log(`Image uploaded successfully. Media ID: ${mediaId}`);
+
+        // Set alt text, title, and description
+        const patchData = {
+          title: focusKeyword,
+          alt_text: focusKeyword,
+          description: celebrityName,
+        };
+
+        const patchResponse = await fetch(`${WP_BASE}/media/${mediaId}`, {
+          method: "POST",
+          headers: headersJson,
+          body: JSON.stringify(patchData),
+        });
+        
+        if (!patchResponse.ok) {
+          console.error(`Failed to update media metadata:`, await patchResponse.text());
+          // Continue even if metadata update fails - image is uploaded
+        }
+      } catch (error) {
+        console.error("Error uploading image before post creation:", error);
+        return NextResponse.json(
+          {
+            error: "Failed to upload featured image",
+            message: error.message,
+          },
+          { status: 500 }
+        );
+      }
+    } else {
+      // No image URL found - fail post creation
+      return NextResponse.json(
+        {
+          error: "Featured image is required",
+          message: "No image URL found. Post creation aborted.",
+        },
+        { status: 400 }
+      );
+    }
+
+    // Step 5: Create post with featured_media - mediaId is required at this point
+    if (!mediaId) {
+      return NextResponse.json(
+        {
+          error: "Featured image upload failed",
+          message: "Post cannot be created without a featured image",
+        },
+        { status: 400 }
+      );
+    }
+
     const postPayload = {
       title: seoTitle,
       content: postContentFinal,
       status: "draft",
       slug: slugVal,
       author: 2,
+      featured_media: mediaId, // Required - post will not be created without it
       meta: {
         rank_math_title: seoTitle,
         rank_math_focus_keyword: focusKeyword,
@@ -270,7 +405,167 @@ export async function GET(request) {
     const postData = await postResponse.json();
     const postId = postData.id;
 
-    // Step 5: Upload and assign featured image if available
+    // Verify featured_media was set in the post
+    if (mediaId && (!postData.featured_media || postData.featured_media !== mediaId)) {
+      // Featured image wasn't set, try to set it now
+      console.log(`Featured image not set in post creation, attempting to set now...`);
+      try {
+        const updateResponse = await fetch(`${WP_BASE}/posts/${postId}`, {
+          method: "PUT",
+          headers: headersJson,
+          body: JSON.stringify({ featured_media: mediaId }),
+        });
+        
+        if (updateResponse.ok) {
+          console.log(`Featured image ${mediaId} successfully attached to post ${postId}`);
+        } else {
+          const updateErrorText = await updateResponse.text();
+          console.error(`Failed to set featured image for post ${postId}:`, {
+            status: updateResponse.status,
+            error: updateErrorText.substring(0, 200),
+          });
+        }
+      } catch (error) {
+        console.error(`Error setting featured image:`, error);
+      }
+    } else if (mediaId) {
+      console.log(`Featured image ${mediaId} was set during post creation`);
+    }
+
+    // Fallback code removed - image upload is now required before post creation
+    // If mediaId is not set at this point, it means the initial upload failed
+    // and the post should not have been created
+    if (!mediaId) {
+      console.error("CRITICAL: Post was created but mediaId is not set. This should not happen.");
+    }
+
+    // Save to database via API
+    if (websiteId) {
+      try {
+        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+        const saveResponse = await fetch(`${baseUrl}/api/wordpress-posts`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Cookie: request.headers.get("cookie") || "",
+          },
+          body: JSON.stringify({
+            website_id: parseInt(websiteId),
+            celebrity_name: celebrityName,
+            post_title: seoTitle,
+            post_id: postId,
+            post_url: null,
+            image_url: imageUrl,
+            content: postContentFinal,
+            slug: slugVal,
+            meta_description: metaDescription,
+          }),
+        });
+        
+        if (!saveResponse.ok) {
+          console.error("Failed to save WordPress post to database:", await saveResponse.text());
+        }
+      } catch (error) {
+        console.error("Error saving WordPress post to database:", error);
+      }
+    }
+
+    return NextResponse.json({
+      status: "success",
+      post_id: postId,
+      media_id: mediaId || null,
+      message: mediaId 
+        ? `Post ID ${postId} created with featured image ID ${mediaId}`
+        : `Post ${postId} created successfully`,
+      title: seoTitle,
+      meta_description: metaDescription,
+      image_url: imageUrl,
+      slug: slugVal,
+    });
+  } catch (error) {
+    console.error("Error in wp-create-post API:", error);
+    return NextResponse.json(
+      {
+        error: "Unexpected error",
+        message: error.message,
+      },
+      { status: 500 }
+    );
+  }
+}
+
+// POST endpoint (alternative method - handles large content without URL length limits)
+export async function POST(request) {
+  try {
+    // Check authentication
+    const session = await auth();
+    if (!session || !session.user) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    const body = await request.json();
+    const postContent = body.post_content || "";
+    const keyword = body.keyword || "";
+    const websiteId = body.website_id || null;
+
+    if (!keyword.trim()) {
+      return NextResponse.json(
+        { error: "keyword is required" },
+        { status: 400 }
+      );
+    }
+
+    if (!postContent.trim()) {
+      return NextResponse.json(
+        { error: "post_content is required" },
+        { status: 400 }
+      );
+    }
+
+    // Step 1: Extract/process input
+    const title = keyword.trim();
+    const focusKeyword = `${title} religion`.trim();
+    const slugVal = slugify(focusKeyword);
+
+    const rawContent = postContent || "";
+    const isHtml = /<\s*[a-zA-Z][^>]*>/.test(rawContent);
+    let contentHtml = rawContent;
+
+    // Add internal link
+    const internalLink =
+      "<p>If you are interested in learning more about religion, please visit " +
+      '<a href="https://whatreligionisinfo.com/">whatreligionisinfo.com</a>.</p>';
+    contentHtml += internalLink;
+
+    const celebrityName = title;
+
+    // Get cookies from the request to pass to image search API
+    const cookies = request.headers.get("cookie") || "";
+
+    // Step 2: Find image
+    const imageUrl = await findImage(celebrityName, cookies);
+
+    // Step 3: Generate SEO title & description
+    const { seoTitle, metaDescription } = await generateSEOContent(
+      focusKeyword,
+      title,
+      postContent
+    );
+
+    // Combine meta description and content
+    const postContentFinal = metaDescription + "\n\n" + contentHtml;
+
+    const headersJson = {
+      Authorization: WP_AUTH_HEADER,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    };
+
+    // Step 4: Upload image first if available - REQUIRED before post creation
+    let mediaId = null;
     if (imageUrl) {
       try {
         // Download image
@@ -282,8 +577,12 @@ export async function GET(request) {
         clearTimeout(imgTimeoutId);
 
         if (!imgResponse.ok) {
-          throw new Error(
-            `Failed to download image: ${imgResponse.statusText}`
+          return NextResponse.json(
+            {
+              error: "Failed to download image",
+              message: `Image download failed: ${imgResponse.statusText}`,
+            },
+            { status: 400 }
           );
         }
 
@@ -306,159 +605,193 @@ export async function GET(request) {
 
         const mediaHeaders = {
           Authorization: WP_AUTH_HEADER,
-          "Content-Disposition": `attachment; filename=${filename}`,
+          "Content-Disposition": `attachment; filename="${filename}"`,
           "Content-Type": contentType,
         };
 
-        // Upload image
+        // Upload image - REQUIRED for post creation
         const mediaResponse = await fetch(`${WP_BASE}/media`, {
           method: "POST",
           headers: mediaHeaders,
           body: Buffer.from(imgData),
         });
 
-        if (mediaResponse.status === 201) {
-          const mediaData = await mediaResponse.json();
-          const mediaId = mediaData.id;
+        if (mediaResponse.status !== 201) {
+          const errorText = await mediaResponse.text();
+          return NextResponse.json(
+            {
+              error: "Failed to upload featured image",
+              message: `Image upload failed: ${mediaResponse.status} ${mediaResponse.statusText}. ${errorText.substring(0, 200)}`,
+            },
+            { status: 400 }
+          );
+        }
 
-          // Set alt text, title, and description
-          const patchData = {
-            title: focusKeyword,
-            alt_text: focusKeyword,
-            description: celebrityName,
-          };
+        const mediaData = await mediaResponse.json();
+        mediaId = mediaData.id;
+        console.log(`Image uploaded successfully. Media ID: ${mediaId}`);
 
-          await fetch(`${WP_BASE}/media/${mediaId}`, {
-            method: "POST",
-            headers: headersJson,
-            body: JSON.stringify(patchData),
-          });
+        // Set alt text, title, and description
+        const patchData = {
+          title: focusKeyword,
+          alt_text: focusKeyword,
+          description: celebrityName,
+        };
 
-          // Attach featured image to post
-          const updateResponse = await fetch(`${WP_BASE}/posts/${postId}`, {
-            method: "POST",
-            headers: headersJson,
-            body: JSON.stringify({ featured_media: mediaId }),
-          });
+        const patchResponse = await fetch(`${WP_BASE}/media/${mediaId}`, {
+          method: "POST",
+          headers: headersJson,
+          body: JSON.stringify(patchData),
+        });
+        
+        if (!patchResponse.ok) {
+          console.error(`Failed to update media metadata:`, await patchResponse.text());
+          // Continue even if metadata update fails - image is uploaded
+        }
+      } catch (error) {
+        console.error("Error uploading image before post creation:", error);
+        return NextResponse.json(
+          {
+            error: "Failed to upload featured image",
+            message: error.message,
+          },
+          { status: 500 }
+        );
+      }
+    } else {
+      // No image URL found - fail post creation
+      return NextResponse.json(
+        {
+          error: "Featured image is required",
+          message: "No image URL found. Post creation aborted.",
+        },
+        { status: 400 }
+      );
+    }
 
-          if (updateResponse.status === 200 || updateResponse.status === 201) {
-            // Save to database
-            await saveWordPressPostToDatabase({
-              website_id: websiteId ? parseInt(websiteId) : null,
-              celebrity_name: celebrityName,
-              post_title: seoTitle,
-              post_id: postId,
-              post_url: null, // WordPress post URL can be constructed from slug
-              image_url: imageUrl,
-              content: postContentFinal,
-              slug: slugVal,
-              meta_description: metaDescription,
-            });
+    // Step 5: Create post with featured_media - mediaId is required at this point
+    if (!mediaId) {
+      return NextResponse.json(
+        {
+          error: "Featured image upload failed",
+          message: "Post cannot be created without a featured image",
+        },
+        { status: 400 }
+      );
+    }
 
-            return NextResponse.json({
-              status: "success",
-              post_id: postId,
-              media_id: mediaId,
-              message: `Post ID ${postId} created with featured image ID ${mediaId}`,
-              title: seoTitle,
-              meta_description: metaDescription,
-              image_url: imageUrl,
-              slug: slugVal,
-            });
-          } else {
-            const updateErrorText = await updateResponse.text();
-            return NextResponse.json({
-              status: "partial_success",
-              post_id: postId,
-              message: `Post created but failed to set featured image: ${updateErrorText}`,
-              status_code: updateResponse.status,
-            });
-          }
+    const postPayload = {
+      title: seoTitle,
+      content: postContentFinal,
+      status: "draft",
+      slug: slugVal,
+      author: 2,
+      featured_media: mediaId, // Required - post will not be created without it
+      meta: {
+        rank_math_title: seoTitle,
+        rank_math_focus_keyword: focusKeyword,
+        rank_math_description: metaDescription,
+      },
+    };
+
+    const postResponse = await fetch(`${WP_BASE}/posts`, {
+      method: "POST",
+      headers: headersJson,
+      body: JSON.stringify(postPayload),
+    });
+
+    if (postResponse.status !== 201) {
+      const errorText = await postResponse.text();
+      return NextResponse.json(
+        {
+          error: "Failed to create post",
+          status_code: postResponse.status,
+          details: errorText,
+        },
+        { status: postResponse.status }
+      );
+    }
+
+    const postData = await postResponse.json();
+    const postId = postData.id;
+
+    // Verify featured_media was set in the post
+    if (mediaId && (!postData.featured_media || postData.featured_media !== mediaId)) {
+      // Featured image wasn't set, try to set it now
+      console.log(`Featured image not set in post creation, attempting to set now...`);
+      try {
+        const updateResponse = await fetch(`${WP_BASE}/posts/${postId}`, {
+          method: "PUT",
+          headers: headersJson,
+          body: JSON.stringify({ featured_media: mediaId }),
+        });
+        
+        if (updateResponse.ok) {
+          console.log(`Featured image ${mediaId} successfully attached to post ${postId}`);
         } else {
-          const mediaErrorText = await mediaResponse.text();
-          return NextResponse.json({
-            status: "partial_success",
-            post_id: postId,
-            message: `Post created but image upload failed: ${mediaErrorText}`,
-            status_code: mediaResponse.status,
+          const updateErrorText = await updateResponse.text();
+          console.error(`Failed to set featured image for post ${postId}:`, {
+            status: updateResponse.status,
+            error: updateErrorText.substring(0, 200),
           });
         }
       } catch (error) {
-        console.error("Error uploading image:", error);
-        return NextResponse.json({
-          status: "partial_success",
-          post_id: postId,
-          message: `Post created but error uploading image: ${error.message}`,
+        console.error(`Error setting featured image:`, error);
+      }
+    } else if (mediaId) {
+      console.log(`Featured image ${mediaId} was set during post creation`);
+    }
+
+    // Fallback code removed - image upload is now required before post creation
+    // If mediaId is not set at this point, it means the initial upload failed
+    // and the post should not have been created
+    if (!mediaId) {
+      console.error("CRITICAL: Post was created but mediaId is not set. This should not happen.");
+    }
+
+    // Save to database via API
+    if (websiteId) {
+      try {
+        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+        const saveResponse = await fetch(`${baseUrl}/api/wordpress-posts`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Cookie: request.headers.get("cookie") || "",
+          },
+          body: JSON.stringify({
+            website_id: parseInt(websiteId),
+            celebrity_name: celebrityName,
+            post_title: seoTitle,
+            post_id: postId,
+            post_url: null,
+            image_url: imageUrl,
+            content: postContentFinal,
+            slug: slugVal,
+            meta_description: metaDescription,
+          }),
         });
+        
+        if (!saveResponse.ok) {
+          console.error("Failed to save WordPress post to database:", await saveResponse.text());
+        }
+      } catch (error) {
+        console.error("Error saving WordPress post to database:", error);
       }
     }
 
     return NextResponse.json({
       status: "success",
       post_id: postId,
-      post_title: seoTitle,
-      slug: slugVal,
+      media_id: mediaId || null,
+      message: mediaId 
+        ? `Post ID ${postId} created with featured image ID ${mediaId}`
+        : `Post ${postId} created successfully`,
+      title: seoTitle,
       meta_description: metaDescription,
       image_url: imageUrl,
-      message: `Post ${postId} created successfully`,
+      slug: slugVal,
     });
-  } catch (error) {
-    console.error("Error in wp-create-post API:", error);
-    return NextResponse.json(
-      {
-        error: "Unexpected error",
-        message: error.message,
-      },
-      { status: 500 }
-    );
-  }
-}
-
-// POST endpoint (alternative method)
-export async function POST(request) {
-  try {
-    // Check authentication
-    const session = await auth();
-    if (!session || !session.user) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
-    }
-
-    const body = await request.json();
-    const postContent = body.post_content || "";
-    const keyword = body.keyword || "";
-
-    if (!keyword.trim()) {
-      return NextResponse.json(
-        { error: "keyword is required" },
-        { status: 400 }
-      );
-    }
-
-    if (!postContent.trim()) {
-      return NextResponse.json(
-        { error: "post_content is required" },
-        { status: 400 }
-      );
-    }
-
-    // Reuse the same logic by creating a new request URL
-    const url = new URL(request.url);
-    url.searchParams.set("post_content", postContent);
-    url.searchParams.set("keyword", keyword);
-    if (websiteId) {
-      url.searchParams.set("website_id", websiteId);
-    }
-
-    // Create a new request object with the modified URL
-    const newRequest = new Request(url.toString(), {
-      method: "GET",
-      headers: request.headers,
-    });
-
-    return GET(newRequest);
   } catch (error) {
     console.error("Error in wp-create-post API (POST):", error);
     return NextResponse.json(

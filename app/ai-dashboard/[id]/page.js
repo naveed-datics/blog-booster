@@ -105,11 +105,17 @@ export default function AIDashboardPage() {
       }
       setWebsite(foundWebsite);
 
+      // Set loading state before fetching trends
+      setSearchingUrls(true);
+      setTrendingList([]);
+
       // Fetch statistics
       await fetchTrendingList(foundWebsite);
     } catch (err) {
       setError(err.message);
       console.error("Error fetching website data:", err);
+      // Clear loading state on error
+      setSearchingUrls(false);
     } finally {
       setLoading(false);
     }
@@ -124,6 +130,13 @@ export default function AIDashboardPage() {
       // Get today's date in YYYY-MM-DD format
       const today = new Date().toISOString().split("T")[0];
       const dateToFetch = dateFilter || today;
+
+      // Set loading state for sitemap processing (only for initial load)
+      if (!append) {
+        setSearchingUrls(true);
+        // Clear existing trends to show loading state
+        setTrendingList([]);
+      }
 
       // Fetch saved trends from database for the specific date
       const response = await fetch(`/api/trends?date=${dateToFetch}`);
@@ -140,20 +153,26 @@ export default function AIDashboardPage() {
           (trend) => trend.celebrity_name && trend.celebrity_name.trim() !== ""
         );
 
-        if (append) {
-          // Append to existing list
-          setTrendingList((prev) => [...prev, ...celebrityTrends]);
-        } else {
-          // Replace list (initial load)
-          setTrendingList(celebrityTrends);
-        }
-
         // Mark this date as loaded
         setLoadedDates((prev) => new Set([...prev, dateToFetch]));
 
-        // Search for URLs for new celebrities
+        // Search for URLs for new celebrities BEFORE displaying trends
         if (celebrityTrends.length > 0) {
-          searchCelebrityUrls(celebrityTrends, append);
+          await searchCelebrityUrls(celebrityTrends, append);
+
+          // Only set trends list AFTER sitemap search is complete
+          if (append) {
+            // Append to existing list
+            setTrendingList((prev) => [...prev, ...celebrityTrends]);
+          } else {
+            // Replace list (initial load)
+            setTrendingList(celebrityTrends);
+          }
+        } else {
+          // No trends found, set empty list
+          if (!append) {
+            setTrendingList([]);
+          }
         }
       } else {
         if (!append) {
@@ -165,12 +184,20 @@ export default function AIDashboardPage() {
       if (!append) {
         setTrendingList([]);
       }
+    } finally {
+      // Clear loading state after sitemap processing (only for initial load)
+      if (!append) {
+        setSearchingUrls(false);
+      }
     }
   };
 
   const searchCelebrityUrls = async (trends, append = false) => {
     try {
-      setSearchingUrls(true);
+      // Only set searchingUrls if this is the initial load (not append)
+      if (!append) {
+        setSearchingUrls(true);
+      }
       const urlMap = { ...celebrityUrls };
 
       // Search for URLs for each celebrity (only if not already searched)
@@ -207,7 +234,11 @@ export default function AIDashboardPage() {
     } catch (err) {
       console.error("Error searching celebrity URLs:", err);
     } finally {
-      setSearchingUrls(false);
+      // Only clear searchingUrls if this is an append operation (called independently)
+      // If called from fetchTrendingList, the loading state is managed there
+      if (append) {
+        setSearchingUrls(false);
+      }
     }
   };
 
@@ -242,9 +273,20 @@ export default function AIDashboardPage() {
   const handleGenerateArticle = async (celebrityName, silent = false) => {
     if (!silent) {
       setGeneratingArticle(true);
-      setGenerationSteps([]);
       setGeneratedArticle(null);
       setArticleDialogOpen(true);
+
+      // Initialize all expected steps upfront - all start as pending (will show loading)
+      const initialSteps = [
+        { step: "Found sources", status: "pending" },
+        { step: "Found images", status: "pending" },
+        { step: "Fetched content", status: "pending" },
+        { step: "Blog post generated", status: "pending" },
+        { step: "Content humanized", status: "pending" },
+        { step: "WordPress post created", status: "pending" },
+        { step: "Saved to database", status: "pending" },
+      ];
+      setGenerationSteps(initialSteps);
     }
 
     try {
@@ -257,25 +299,144 @@ export default function AIDashboardPage() {
         }),
       });
 
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
       const data = await response.json();
+
+      // Update steps as they come in - process sequentially to show updates one by one
+      if (data.steps && data.steps.length > 0 && !silent) {
+        // Map API step names to our display step names
+        const stepMapping = {
+          "Finding sources...": "Found sources",
+          "Found sources": "Found sources",
+          "Searching for images...": "Found images",
+          "Found images": "Found images",
+          "Fetching content from URLs...": "Fetched content",
+          "Fetched content": "Fetched content",
+          "Generating blog post...": "Blog post generated",
+          "Blog post generated": "Blog post generated",
+          "Humanizing content...": "Content humanized",
+          "Content humanized": "Content humanized",
+          "Creating WordPress post...": "WordPress post created",
+          "WordPress post created": "WordPress post created",
+          "Saving to database...": "Saved to database",
+          "Saved to database": "Saved to database",
+        };
+
+        // Process steps sequentially with delays to show updates one by one
+        let currentIndex = 0;
+
+        const processNextStep = () => {
+          if (currentIndex < data.steps.length) {
+            const apiStep = data.steps[currentIndex];
+            const targetStepName = stepMapping[apiStep.step];
+
+            if (targetStepName) {
+              setGenerationSteps((prevSteps) => {
+                const updatedSteps = [...prevSteps];
+                const stepIndex = updatedSteps.findIndex(
+                  (s) => s.step === targetStepName
+                );
+
+                if (stepIndex !== -1) {
+                  // Update existing step
+                  if (apiStep.status === "error") {
+                    // Immediately mark as error (red) - no delay
+                    updatedSteps[stepIndex] = {
+                      step: targetStepName,
+                      status: "error",
+                      error:
+                        apiStep.error || apiStep.message || "An error occurred",
+                    };
+                  } else if (apiStep.status === "completed") {
+                    // First mark as in_progress, then completed after a brief delay
+                    updatedSteps[stepIndex] = {
+                      step: targetStepName,
+                      status: "in_progress",
+                      error: apiStep.error,
+                    };
+
+                    // Mark as completed after a short delay
+                    setTimeout(() => {
+                      setGenerationSteps((prev) => {
+                        const newSteps = [...prev];
+                        const idx = newSteps.findIndex(
+                          (s) => s.step === targetStepName
+                        );
+                        if (idx !== -1) {
+                          newSteps[idx] = {
+                            step: targetStepName,
+                            status: "completed",
+                            error: apiStep.error,
+                          };
+                        }
+                        return newSteps;
+                      });
+                    }, 500);
+                  } else {
+                    // Update with current status (in_progress or pending)
+                    updatedSteps[stepIndex] = {
+                      step: targetStepName,
+                      status:
+                        apiStep.status === "in_progress"
+                          ? "in_progress"
+                          : "pending",
+                      error: apiStep.error,
+                    };
+                  }
+                } else {
+                  // Add new step if not in initial list
+                  updatedSteps.push({
+                    step: targetStepName,
+                    status:
+                      apiStep.status === "completed"
+                        ? "completed"
+                        : apiStep.status === "in_progress"
+                        ? "in_progress"
+                        : apiStep.status === "error"
+                        ? "error"
+                        : "pending",
+                    error: apiStep.error,
+                  });
+                }
+
+                return updatedSteps;
+              });
+            }
+
+            currentIndex++;
+            // Process next step after a short delay (400ms) to show progression
+            if (currentIndex < data.steps.length) {
+              setTimeout(processNextStep, 400);
+            }
+          }
+        };
+
+        // Start processing steps
+        processNextStep();
+      }
 
       if (data.success && data.result) {
         if (!silent) {
           setGeneratedArticle(data.result);
-          setGenerationSteps(data.steps || []);
           toast.success("Article generated successfully!");
         }
         return { success: true, data: data.result };
       } else {
         if (!silent) {
           toast.error(data.error || "Failed to generate article");
-          setGenerationSteps(data.steps || []);
         }
         return { success: false, error: data.error };
       }
     } catch (error) {
       console.error("Error generating article:", error);
       if (!silent) {
+        setGenerationSteps((prev) => [
+          ...prev,
+          { step: "Error occurred", status: "error", error: error.message },
+        ]);
         toast.error("Error generating article: " + error.message);
       }
       return { success: false, error: error.message };
@@ -571,7 +732,17 @@ export default function AIDashboardPage() {
 
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6 mt-6">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-2xl font-bold">Trending List</h2>
+            <div>
+              <h2 className="text-2xl font-bold">Trending List</h2>
+              {searchingUrls && trendingList.length === 0 && (
+                <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400 mt-2">
+                  <RefreshCw className="h-4 w-4 animate-spin text-blue-600" />
+                  <span className="text-sm">
+                    Processing sitemap and loading trends...
+                  </span>
+                </div>
+              )}
+            </div>
             <div className="flex items-center gap-4">
               {/* Auto Mode Toggle */}
               <div className="flex items-center gap-3 bg-gray-50 dark:bg-gray-800 p-3 rounded-lg border">
@@ -669,11 +840,15 @@ export default function AIDashboardPage() {
               </p>
             </div>
           )}
-          {trendingList.length === 0 ? (
+          {/* Show loading indicator under heading, hide table while loading */}
+          {searchingUrls &&
+          trendingList.length === 0 ? null : trendingList.length === 0 ? ( // Loading - table is hidden, loading shown under heading
+            // No trends found after loading
             <p className="text-gray-600 dark:text-gray-400 text-center py-8">
               No trending items found.
             </p>
           ) : (
+            // Show table when loading is complete and trends exist
             <div className="rounded-md border">
               <Table>
                 <TableHeader>
@@ -863,30 +1038,90 @@ export default function AIDashboardPage() {
             </DialogDescription>
           </DialogHeader>
 
-          {generationSteps.length > 0 && (
-            <div className="mb-4 space-y-2">
-              <h3 className="font-semibold text-sm">Generation Steps:</h3>
-              {generationSteps.map((step, index) => (
-                <div
-                  key={index}
-                  className={`text-sm p-2 rounded ${
-                    step.status === "completed"
-                      ? "bg-green-50 text-green-700"
-                      : step.status === "in_progress"
-                      ? "bg-blue-50 text-blue-700"
-                      : step.status === "error"
-                      ? "bg-red-50 text-red-700"
-                      : "bg-gray-50 text-gray-700"
-                  }`}
-                >
-                  {step.status === "in_progress" && "⏳ "}
-                  {step.status === "completed" && "✅ "}
-                  {step.status === "error" && "❌ "}
-                  {step.step}
-                </div>
-              ))}
-            </div>
-          )}
+          {/* Show steps prominently during generation */}
+          <div className="mb-6">
+            <h3 className="font-semibold text-lg mb-4">
+              {generatingArticle ? "Generation Progress:" : "Generation Steps:"}
+            </h3>
+            {generationSteps.length > 0 ? (
+              <div className="space-y-3 max-h-96 overflow-y-auto pr-2">
+                {generationSteps.map((step, index) => {
+                  // Format step names to be more user-friendly
+                  const formatStepName = (stepName) => {
+                    const stepMap = {
+                      "Found sources": "Resources Found",
+                      "Found images": "Image Searched",
+                      "Fetched content": "Content Retrieved",
+                      "Blog post generated": "Article Created",
+                      "Content humanized": "Content Humanized",
+                      "WordPress post created": "Publishing",
+                      "Saved to database": "Saved to Database",
+                      "Database save failed": "Database Save Failed",
+                      "Database save error": "Database Error",
+                      "Error occurred": "Error Occurred",
+                    };
+                    return stepMap[stepName] || stepName;
+                  };
+
+                  return (
+                    <div
+                      key={index}
+                      className={`flex items-center gap-3 p-3 rounded-lg border-2 transition-all ${
+                        step.status === "completed"
+                          ? "bg-green-50 dark:bg-green-900/20 border-green-300 dark:border-green-700 text-green-800 dark:text-green-200"
+                          : step.status === "in_progress"
+                          ? "bg-blue-50 dark:bg-blue-900/20 border-blue-300 dark:border-blue-700 text-blue-800 dark:text-blue-200"
+                          : step.status === "error"
+                          ? "bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-700 text-red-800 dark:text-red-200"
+                          : step.status === "pending"
+                          ? "bg-gray-100 dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400"
+                          : "bg-gray-50 dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300"
+                      }`}
+                    >
+                      <div className="flex-shrink-0">
+                        {step.status === "in_progress" && (
+                          <RefreshCw className="h-5 w-5 animate-spin text-blue-600 dark:text-blue-400" />
+                        )}
+                        {step.status === "completed" && (
+                          <span className="text-xl">✅</span>
+                        )}
+                        {step.status === "error" && (
+                          <span className="text-xl">❌</span>
+                        )}
+                        {step.status === "pending" && (
+                          <RefreshCw className="h-5 w-5 animate-spin text-gray-500 dark:text-gray-400" />
+                        )}
+                        {!step.status &&
+                          step.status !== "in_progress" &&
+                          step.status !== "completed" &&
+                          step.status !== "error" &&
+                          step.status !== "pending" && (
+                            <span className="text-xl">⏸️</span>
+                          )}
+                      </div>
+                      <div className="flex-1">
+                        <p className="font-medium">
+                          {formatStepName(step.step)}
+                        </p>
+                        {step.error && (
+                          <p className="text-xs mt-1 opacity-75 text-red-600 dark:text-red-400">
+                            {step.error}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : generatingArticle ? (
+              <div className="flex items-center gap-3 p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
+                <RefreshCw className="h-5 w-5 animate-spin text-blue-600" />
+                <span className="text-blue-800 dark:text-blue-200">
+                  Starting article generation...
+                </span>
+              </div>
+            ) : null}
+          </div>
 
           {generatedArticle && (
             <div className="space-y-4">
@@ -962,10 +1197,12 @@ export default function AIDashboardPage() {
             </div>
           )}
 
-          {generatingArticle && (
+          {generatingArticle && generationSteps.length === 0 && (
             <div className="flex items-center justify-center py-8">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
-              <span className="ml-2">Generating article...</span>
+              <RefreshCw className="h-8 w-8 animate-spin text-blue-600" />
+              <span className="ml-2 text-gray-600 dark:text-gray-400">
+                Initializing article generation...
+              </span>
             </div>
           )}
         </DialogContent>

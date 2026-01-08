@@ -12,6 +12,32 @@ function getBaseUrl() {
   return "http://localhost:3000";
 }
 
+// Helper function to create SSE stream
+function createSSEStream(stepsCallback) {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const sendStep = (step) => {
+        const data = JSON.stringify(step);
+        controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+      };
+
+      try {
+        await stepsCallback(sendStep);
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`));
+        controller.close();
+      } catch (error) {
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`)
+        );
+        controller.close();
+      }
+    },
+  });
+
+  return stream;
+}
+
 // POST endpoint to generate article using LangGraph flow
 export async function POST(request) {
   try {
@@ -38,12 +64,39 @@ export async function POST(request) {
     const steps = [];
     let finalResult = null;
 
+    // Get cookies from the original request to pass to internal API calls
+    const cookies = request.headers.get("cookie") || "";
+
+    // Check if client wants streaming (SSE)
+    const useStreaming = request.headers.get("accept")?.includes("text/event-stream");
+    
+    // If streaming, we'll need to modify the approach
+    // For now, collect steps and return at end, but we can enhance later
+    
     try {
       // Step 1: Find Sources
       steps.push({ step: "Finding sources...", status: "in_progress" });
       const findSourcesResponse = await fetch(
-        `${baseUrl}/api/find-sources?q=${encodeURIComponent(celebrityName)}`
+        `${baseUrl}/api/find-sources?q=${encodeURIComponent(celebrityName)}`,
+        {
+          headers: {
+            Cookie: cookies,
+          },
+        }
       );
+      
+      if (!findSourcesResponse.ok) {
+        const errorText = await findSourcesResponse.text();
+        throw new Error(`Failed to find sources: ${findSourcesResponse.status} ${findSourcesResponse.statusText}. ${errorText.substring(0, 200)}`);
+      }
+      
+      // Check if response is JSON (not HTML error page)
+      const contentType = findSourcesResponse.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        const errorText = await findSourcesResponse.text();
+        throw new Error(`Invalid response from find-sources API. Expected JSON but got: ${contentType}. Response: ${errorText.substring(0, 200)}`);
+      }
+      
       const sourcesData = await findSourcesResponse.json();
       steps.push({ step: "Found sources", status: "completed", data: sourcesData });
 
@@ -57,8 +110,26 @@ export async function POST(request) {
       // Step 2: Image Search
       steps.push({ step: "Searching for images...", status: "in_progress" });
       const imageSearchResponse = await fetch(
-        `${baseUrl}/api/image-search?q=${encodeURIComponent(celebrityName)}`
+        `${baseUrl}/api/image-search?q=${encodeURIComponent(celebrityName)}`,
+        {
+          headers: {
+            Cookie: cookies,
+          },
+        }
       );
+      
+      if (!imageSearchResponse.ok) {
+        const errorText = await imageSearchResponse.text();
+        throw new Error(`Failed to search images: ${imageSearchResponse.status} ${imageSearchResponse.statusText}. ${errorText.substring(0, 200)}`);
+      }
+      
+      // Check if response is JSON
+      const imageContentType = imageSearchResponse.headers.get("content-type") || "";
+      if (!imageContentType.includes("application/json")) {
+        const errorText = await imageSearchResponse.text();
+        throw new Error(`Invalid response from image-search API. Expected JSON but got: ${imageContentType}. Response: ${errorText.substring(0, 200)}`);
+      }
+      
       const imageData = await imageSearchResponse.json();
       steps.push({ step: "Found images", status: "completed", data: imageData });
 
@@ -67,9 +138,25 @@ export async function POST(request) {
         steps.push({ step: "Fetching content from URLs...", status: "in_progress" });
         const fetchContentResponse = await fetch(`${baseUrl}/api/fetch-content`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            Cookie: cookies,
+          },
           body: JSON.stringify({ urls }),
         });
+        
+        if (!fetchContentResponse.ok) {
+          const errorText = await fetchContentResponse.text();
+          throw new Error(`Failed to fetch content: ${fetchContentResponse.status} ${fetchContentResponse.statusText}. ${errorText.substring(0, 200)}`);
+        }
+        
+        // Check if response is JSON
+        const fetchContentType = fetchContentResponse.headers.get("content-type") || "";
+        if (!fetchContentType.includes("application/json")) {
+          const errorText = await fetchContentResponse.text();
+          throw new Error(`Invalid response from fetch-content API. Expected JSON but got: ${fetchContentType}. Response: ${errorText.substring(0, 200)}`);
+        }
+        
         const contentData = await fetchContentResponse.json();
         steps.push({ step: "Fetched content", status: "completed", data: contentData });
 
@@ -88,9 +175,18 @@ export async function POST(request) {
           }
           const writeBlogResponse = await fetch(writeBlogUrl, {
             method: "POST",
-            headers: { "Content-Type": "text/plain" },
+            headers: { 
+              "Content-Type": "text/plain",
+              Cookie: cookies,
+            },
             body: combinedContent,
           });
+          
+          if (!writeBlogResponse.ok) {
+            const errorText = await writeBlogResponse.text();
+            throw new Error(`Failed to write blog: ${writeBlogResponse.status} ${writeBlogResponse.statusText}. ${errorText.substring(0, 200)}`);
+          }
+          
           const blogData = await writeBlogResponse.json();
           steps.push({ step: "Blog post generated", status: "completed", data: blogData });
 
@@ -99,12 +195,21 @@ export async function POST(request) {
             steps.push({ step: "Humanizing content...", status: "in_progress" });
             const humanizeResponse = await fetch(`${baseUrl}/api/humanize`, {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: { 
+                "Content-Type": "application/json",
+                Cookie: cookies,
+              },
               body: JSON.stringify({
                 html: blogData.blog_post.content,
                 call_ai: true,
               }),
             });
+            
+            if (!humanizeResponse.ok) {
+              const errorText = await humanizeResponse.text();
+              throw new Error(`Failed to humanize content: ${humanizeResponse.status} ${humanizeResponse.statusText}. ${errorText.substring(0, 200)}`);
+            }
+            
             const humanizedData = await humanizeResponse.json();
             steps.push({
               step: "Content humanized",
@@ -116,15 +221,36 @@ export async function POST(request) {
 
             // Step 6: Create WordPress Post
             steps.push({ step: "Creating WordPress post...", status: "in_progress" });
-            let wpUrl = `${baseUrl}/api/wp-create-post?post_content=${encodeURIComponent(humanizedContent)}&keyword=${encodeURIComponent(celebrityName)}`;
-            if (websiteId) {
-              wpUrl += `&website_id=${encodeURIComponent(websiteId)}`;
+            // Use POST instead of GET to avoid 431 error with large content
+            const wpUrl = `${baseUrl}/api/wp-create-post`;
+            const wpResponse = await fetch(wpUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Cookie: cookies,
+              },
+              body: JSON.stringify({
+                post_content: humanizedContent,
+                keyword: celebrityName,
+                website_id: websiteId || null,
+              }),
+            });
+            
+            if (!wpResponse.ok) {
+              const errorText = await wpResponse.text();
+              steps.push({
+                step: "WordPress post created",
+                status: "error",
+                error: `Failed to create WordPress post: ${wpResponse.status} ${wpResponse.statusText}. ${errorText.substring(0, 200)}`,
+              });
+              throw new Error(`Failed to create WordPress post: ${wpResponse.status} ${wpResponse.statusText}. ${errorText.substring(0, 200)}`);
             }
-            const wpResponse = await fetch(wpUrl);
+            
             const wpData = await wpResponse.json();
             steps.push({
               step: "WordPress post created",
               status: wpData.status === "success" ? "completed" : "error",
+              error: wpData.status !== "success" ? (wpData.error || wpData.message || "Unknown error") : undefined,
               data: wpData,
             });
 
@@ -134,7 +260,10 @@ export async function POST(request) {
               try {
                 const saveResponse = await fetch(`${baseUrl}/api/wordpress-posts`, {
                   method: "POST",
-                  headers: { "Content-Type": "application/json" },
+                  headers: { 
+                    "Content-Type": "application/json",
+                    Cookie: cookies,
+                  },
                   body: JSON.stringify({
                     website_id: parseInt(websiteId),
                     celebrity_name: celebrityName,
@@ -190,11 +319,16 @@ export async function POST(request) {
       });
     }
 
+    // Return response with steps
     return NextResponse.json({
       success: finalResult !== null,
       celebrityName,
       steps,
       result: finalResult,
+    }, {
+      headers: {
+        'Content-Type': 'application/json',
+      },
     });
   } catch (error) {
     console.error("Error in generate-article API:", error);
