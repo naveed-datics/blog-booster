@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 
-export default function WriteBlogPage() {
+function WriteBlogContent() {
   const searchParams = useSearchParams();
   const { data: session } = useSession();
   const [keyword, setKeyword] = useState("");
@@ -230,6 +230,21 @@ export default function WriteBlogPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function WriteBlogPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen p-8">
+        <div className="max-w-7xl mx-auto">
+          <h1 className="text-4xl font-bold mb-6">Write Blog Post</h1>
+          <p className="text-gray-600 dark:text-gray-400">Loading...</p>
+        </div>
+      </div>
+    }>
+      <WriteBlogContent />
+    </Suspense>
   );
 }
 

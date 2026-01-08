@@ -84,7 +84,7 @@ async function generateSEOContent(focusKeyword, title, postContent) {
             messages: [
               {
                 role: "system",
-                content: `You are an SEO assistant. Create one SEO title (50-60 characters) that includes '${focusKeyword}'. The title should be compelling, click-worthy, and naturally include the keyword. Do not add quotes, commentary, or extra text. Output only the title.`,
+                content: `You are an SEO assistant. Create one SEO title that includes '${focusKeyword}'. Do not add commentary.`,
               },
               {
                 role: "user",
@@ -100,52 +100,7 @@ async function generateSEOContent(focusKeyword, title, postContent) {
           const titleData = await titleResponse.json();
           const candidate = titleData.choices?.[0]?.message?.content;
           if (candidate && candidate.trim()) {
-            // Remove quotes and trim
-            let processedTitle = candidate.trim();
-            processedTitle = processedTitle.replace(/^["']+|["']+$/g, "");
-            
-            // Ensure keyword is included, if not add it
-            if (!processedTitle.toLowerCase().includes(focusKeyword.toLowerCase())) {
-              // Try to add keyword naturally
-              if (processedTitle.length + focusKeyword.length + 3 <= 60) {
-                processedTitle = `${processedTitle} - ${focusKeyword}`;
-              } else {
-                // If too long, use focusKeyword as fallback
-                processedTitle = focusKeyword;
-              }
-            }
-            
-            // Truncate to 60 characters if needed (preserve keyword)
-            if (processedTitle.length > 60) {
-              // Try to truncate while keeping keyword
-              const keywordIndex = processedTitle.toLowerCase().indexOf(focusKeyword.toLowerCase());
-              if (keywordIndex !== -1) {
-                // Keep keyword and truncate around it
-                const beforeKeyword = processedTitle.substring(0, keywordIndex).trim();
-                const keyword = processedTitle.substring(keywordIndex, keywordIndex + focusKeyword.length);
-                const afterKeyword = processedTitle.substring(keywordIndex + focusKeyword.length).trim();
-                
-                let truncated = keyword;
-                if (beforeKeyword && truncated.length + beforeKeyword.length + 1 <= 60) {
-                  truncated = `${beforeKeyword} ${truncated}`;
-                }
-                if (afterKeyword && truncated.length + afterKeyword.length + 1 <= 60) {
-                  truncated = `${truncated} ${afterKeyword}`;
-                }
-                
-                // If still too long, just use keyword
-                if (truncated.length > 60) {
-                  processedTitle = focusKeyword;
-                } else {
-                  processedTitle = truncated;
-                }
-              } else {
-                // No keyword found, truncate to 60 chars
-                processedTitle = processedTitle.substring(0, 57) + "...";
-              }
-            }
-            
-            seoTitle = processedTitle;
+            seoTitle = candidate.trim();
           }
         }
       } catch (error) {
@@ -189,20 +144,6 @@ async function generateSEOContent(focusKeyword, title, postContent) {
     }
   } catch (error) {
     console.error("Error in SEO generation:", error);
-  }
-
-  // Final validation and cleanup of SEO title
-  // Remove quotes if present
-  seoTitle = seoTitle.replace(/^["']+|["']+$/g, "");
-  
-  // Ensure it's within 50-60 characters
-  if (seoTitle.length > 60) {
-    seoTitle = seoTitle.substring(0, 57) + "...";
-  }
-  
-  // Ensure minimum length (at least include the keyword)
-  if (seoTitle.length < focusKeyword.length) {
-    seoTitle = focusKeyword;
   }
 
   return { seoTitle, metaDescription };

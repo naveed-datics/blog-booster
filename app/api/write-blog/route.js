@@ -126,39 +126,22 @@ Focus keyword: ${celebrityName}
 Instructions:
 You are an Expert Blog Writer. Write an SEO-friendly blog post in a natural, human tone using the provided context.
 
-IMPORTANT - Title Requirements:
-- Do NOT include quotes ("" or '') around the title or any headings
-- Write titles and headings without quotation marks
-- Use plain text for all titles and headings
-
 SEO Optimization:
 - Use the focus keyword "${celebrityName}" naturally throughout the content
 - Include related LSI (Latent Semantic Indexing) keywords and synonyms
 - Use proper HTML heading structure (H2, H3) for better SEO
 - Write engaging, informative content that provides value to readers
+- Use short paragraphs and bullet lists for better readability
 - Bold important terms using the HTML <b> tag where natural
 - Do NOT use meta statements like "the provided information confirms," "based on the provided information," or similar
 
 Content Requirements:
-- Write detailed paragraphs with 4-5 sentences each. Each paragraph should be comprehensive and provide substantial information. Avoid short, choppy paragraphs.
 - Write comprehensive, well-researched content based on the provided context
 - Use the context information to create informative and engaging content
 - Structure the content with clear headings and subheadings
 - Include an introduction, main content sections, and a conclusion
 - Write in a natural, human tone that engages readers
 - Ensure all information is accurate based on the provided context
-
-FAQ Section Requirements:
-- Include a FAQ section with 5-7 questions specifically about ${celebrityName}'s religion, beliefs, religious background, and faith practices
-- Do NOT include general questions about religion
-- All FAQs must be directly related to ${celebrityName}
-- Format FAQs using proper HTML structure (h2 for "Frequently Asked Questions" heading, then questions as h3 and answers as paragraphs)
-
-Related Queries Section Requirements:
-- Include a "Related Queries" section with 8-10 search queries that are specifically related to ${celebrityName}'s religion, religious beliefs, faith background, and similar celebrity religion topics
-- Do NOT include general religious queries
-- All queries must be niche-specific to celebrity religion topics
-- Format as a list using HTML ul/li tags
 
 Output Format:
 - Output clean HTML markup
@@ -332,14 +315,10 @@ Output Format:
 
     console.log(`Blog post generated for keyword: ${keyword}`);
 
-    // Remove quotes from title if present
-    let cleanTitle = keyword.trim();
-    cleanTitle = cleanTitle.replace(/^["']+|["']+$/g, "");
-
     return NextResponse.json({
       status: "success",
       blog_post: {
-        title: cleanTitle,
+        title: keyword,
         content: blogContent,
       },
     });
