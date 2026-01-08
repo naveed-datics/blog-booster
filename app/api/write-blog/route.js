@@ -16,6 +16,7 @@ CRITICAL CONTENT QUALITY RULES (MUST FOLLOW):
 - AVOID FILLER: Every sentence must add value. Remove generic statements that don't provide specific information.
 - SPECIFIC FAQs: Each FAQ should answer a specific, useful question with detailed information (50-100 words per answer).
 - SPECIFIC RELATED QUERIES: Each query should be a real search term someone might use, with detailed answers (50-100 words per answer).
+- BOLD TAG SPACING: When using <b> or <strong> tags, ALWAYS ensure there is a space before the opening tag and after the closing tag. For example: "of <b>celebrity name religion</b> is" NOT "of<b>celebrity name religion</b>is". Always add spaces around bold tags to ensure proper word separation.
 `;
 
   // Try to inject guidelines after "Instructions:" or "Content Requirements:" sections
@@ -395,6 +396,20 @@ Output Format:
 
     // Remove whitespace between tags
     blogContent = blogContent.replace(/>\s+</g, "><");
+
+    // Fix spacing around inline formatting tags (b, strong, i, em, u, span)
+    // Add space before opening tag if it's directly adjacent to a word character (not already spaced)
+    blogContent = blogContent.replace(
+      /([a-zA-Z0-9.,;:!?)])<(?![\/])(b|strong|i|em|u|span)>/g,
+      "$1 <$2>"
+    );
+    // Add space after closing tag if it's directly adjacent to a word character (not already spaced)
+    blogContent = blogContent.replace(
+      /<\/(b|strong|i|em|u|span)>([a-zA-Z0-9.,;:!?(])/g,
+      "</$1> $2"
+    );
+    // Remove double spaces that might have been created
+    blogContent = blogContent.replace(/\s{2,}/g, " ");
 
     // Clean up spaces around comments
     blogContent = blogContent.replace(/\s*(<!--[^>]*-->)\s*/g, "$1");
