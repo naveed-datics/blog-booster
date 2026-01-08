@@ -417,6 +417,16 @@ function extractNamesFromTrends(formattedTrends) {
 
 export async function GET(request) {
   try {
+    // Check authentication
+    const { auth } = await import('@/lib/auth');
+    const session = await auth();
+    if (!session || !session.user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
     const { searchParams } = new URL(request.url);
     const query = searchParams.get('q') || 'religion';
 

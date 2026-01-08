@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { auth } from '@/lib/auth';
 
 // Comprehensive Religion LSI Words Dictionary
 const RELIGION_LSI_WORDS = {
@@ -90,6 +91,15 @@ function checkLsiMatch(text, searchTerms, lsiWords) {
 // GET endpoint for finding sources
 export async function GET(request) {
   try {
+    // Check authentication
+    const session = await auth();
+    if (!session || !session.user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
     const { searchParams } = new URL(request.url);
     const query = searchParams.get('q') || '';
 

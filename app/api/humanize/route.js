@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
+import { auth } from '@/lib/auth';
 
 // REPLACEMENTS dictionary - converting business jargon to simpler language
 const REPLACEMENTS = {
@@ -347,6 +348,15 @@ function humanizeHtml(html) {
 
 export async function POST(request) {
   try {
+    // Check authentication
+    const session = await auth();
+    if (!session || !session.user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
     const body = await request.json();
     const { html, call_ai } = body;
 

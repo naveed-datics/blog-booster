@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { auth } from "@/lib/auth";
 
 // Helper function to get base URL
 function getBaseUrl() {
@@ -14,6 +15,15 @@ function getBaseUrl() {
 // POST endpoint to generate article using LangGraph flow
 export async function POST(request) {
   try {
+    // Check authentication
+    const session = await auth();
+    if (!session || !session.user) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
     const body = await request.json();
     const { celebrityName, websiteId } = body;
 

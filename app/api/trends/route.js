@@ -35,6 +35,15 @@ Return ONLY "true" if it is a celebrity name, or "false" if it is not (e.g., cou
 // GET endpoint to fetch saved trends from database
 export async function GET(request) {
   try {
+    // Check authentication
+    const session = await auth();
+    if (!session || !session.user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
     const { searchParams } = new URL(request.url);
     const searchQuery = searchParams.get('search_query');
     const limit = parseInt(searchParams.get('limit')) || 100;

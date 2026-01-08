@@ -4,6 +4,8 @@ import {
   copilotRuntimeNextJSAppRouterEndpoint,
 } from "@copilotkit/runtime";
 import OpenAI from "openai";
+import { auth } from "@/lib/auth";
+import { NextResponse } from "next/server";
 
 // Get Azure OpenAI config (same as write-blog route)
 let azureApiKey = process.env.AZURE_OPENAI_API_KEY;
@@ -44,12 +46,35 @@ const serviceAdapter = new OpenAIAdapter({ openai: openaiClient });
 // Initialize the Copilot Runtime
 const runtime = new CopilotRuntime();
 
+// Create the endpoint handler
+const { handleRequest } = copilotRuntimeNextJSAppRouterEndpoint({
+  runtime,
+  serviceAdapter,
+  endpoint: "/api/copilotkit",
+});
+
+export async function GET(req) {
+  // Check authentication
+  const session = await auth();
+  if (!session || !session.user) {
+    return NextResponse.json(
+      { error: "Unauthorized" },
+      { status: 401 }
+    );
+  }
+
+  return handleRequest(req);
+}
+
 export async function POST(req) {
-  const { handleRequest } = copilotRuntimeNextJSAppRouterEndpoint({
-    runtime,
-    serviceAdapter,
-    endpoint: "/api/copilotkit",
-  });
+  // Check authentication
+  const session = await auth();
+  if (!session || !session.user) {
+    return NextResponse.json(
+      { error: "Unauthorized" },
+      { status: 401 }
+    );
+  }
 
   return handleRequest(req);
 }

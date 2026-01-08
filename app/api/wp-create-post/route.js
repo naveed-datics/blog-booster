@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 
 // WordPress Configuration
-const WP_BASE = process.env.WP_BASE_URL || "https://whatreligionisinfo.com/wp-json/wp/v2";
-const WP_AUTH_HEADER = process.env.WP_AUTH_HEADER || "Basic YWRtaW46YWRtaW5Ad29yazEyMw==";
+const WP_BASE =
+  process.env.WP_BASE_URL || "https://whatreligionisinfo.com/wp-json/wp/v2";
+const WP_AUTH_HEADER =
+  process.env.WP_AUTH_HEADER || "Basic YWRtaW46YWRtaW5Ad29yazEyMw==";
 
 // Helper function to slugify text
 function slugify(s) {
@@ -19,12 +21,14 @@ async function findImage(celebrityName) {
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
-    
+
     const response = await fetch(
-      `${baseUrl}/api/image-search?q=${encodeURIComponent(celebrityName)}&limit=1`,
+      `${baseUrl}/api/image-search?q=${encodeURIComponent(
+        celebrityName
+      )}&limit=1`,
       { signal: controller.signal }
     );
-    
+
     clearTimeout(timeoutId);
 
     if (response.status === 200) {
@@ -58,13 +62,17 @@ async function generateSEOContent(focusKeyword, title, postContent) {
     let azureApiKey = process.env.AZURE_OPENAI_API_KEY;
     let azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
     let azureDeploymentName = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
-    let azureApiVersion = process.env.AZURE_OPENAI_API_VERSION || "2024-12-01-preview";
+    let azureApiVersion =
+      process.env.AZURE_OPENAI_API_VERSION || "2024-12-01-preview";
 
     // Remove quotes if present
     if (azureApiKey) azureApiKey = azureApiKey.replace(/^["']|["']$/g, "");
-    if (azureEndpoint) azureEndpoint = azureEndpoint.replace(/^["']|["']$/g, "");
-    if (azureDeploymentName) azureDeploymentName = azureDeploymentName.replace(/^["']|["']$/g, "");
-    if (azureApiVersion) azureApiVersion = azureApiVersion.replace(/^["']|["']$/g, "");
+    if (azureEndpoint)
+      azureEndpoint = azureEndpoint.replace(/^["']|["']$/g, "");
+    if (azureDeploymentName)
+      azureDeploymentName = azureDeploymentName.replace(/^["']|["']$/g, "");
+    if (azureApiVersion)
+      azureApiVersion = azureApiVersion.replace(/^["']|["']$/g, "");
 
     const useAzure = azureApiKey && azureEndpoint && azureDeploymentName;
 
@@ -72,7 +80,7 @@ async function generateSEOContent(focusKeyword, title, postContent) {
       const endpoint = azureEndpoint.replace(/\/$/, "");
       const azureUrl = `${endpoint}/openai/deployments/${azureDeploymentName}/chat/completions?api-version=${azureApiVersion}`;
 
-      // Generate SEO Title
+      // Generate SEO Title following RankMath SEO guidelines
       try {
         const titleResponse = await fetch(azureUrl, {
           method: "POST",
@@ -84,7 +92,14 @@ async function generateSEOContent(focusKeyword, title, postContent) {
             messages: [
               {
                 role: "system",
-                content: `You are an SEO assistant. Create one SEO title that includes '${focusKeyword}'. Do not add commentary.`,
+                content: `You are an SEO assistant following RankMath SEO guidelines. Create one SEO-optimized title that:
+- Includes the focus keyword '${focusKeyword}' naturally
+- Is 50-60 characters long (optimal for search engines)
+- Is compelling and click-worthy
+- Does NOT include quotes or quotation marks
+- Does NOT wrap the title in quotes
+- Is written in title case
+Return only the title text, no quotes, no commentary.`,
               },
               {
                 role: "user",
@@ -100,7 +115,11 @@ async function generateSEOContent(focusKeyword, title, postContent) {
           const titleData = await titleResponse.json();
           const candidate = titleData.choices?.[0]?.message?.content;
           if (candidate && candidate.trim()) {
-            seoTitle = candidate.trim();
+            // Remove any quotes that might be in the response
+            seoTitle = candidate
+              .trim()
+              .replace(/^["']|["']$/g, "")
+              .trim();
           }
         }
       } catch (error) {
@@ -152,6 +171,15 @@ async function generateSEOContent(focusKeyword, title, postContent) {
 // GET endpoint for WordPress post creation
 export async function GET(request) {
   try {
+    // Check authentication
+    const session = await auth();
+    if (!session || !session.user) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
     const { searchParams } = new URL(request.url);
     const postContent = searchParams.get("post_content") || "";
     const keyword = searchParams.get("keyword") || "";
@@ -182,7 +210,7 @@ export async function GET(request) {
 
     // Add internal link
     const internalLink =
-      '<p>If you are interested in learning more about religion, please visit ' +
+      "<p>If you are interested in learning more about religion, please visit " +
       '<a href="https://whatreligionisinfo.com/">whatreligionisinfo.com</a>.</p>';
     contentHtml += internalLink;
 
@@ -245,29 +273,36 @@ export async function GET(request) {
     // Step 5: Upload and assign featured image if available
     if (imageUrl) {
       try {
-    // Download image
-    const imgController = new AbortController();
-    const imgTimeoutId = setTimeout(() => imgController.abort(), 10000);
-    const imgResponse = await fetch(imageUrl, { signal: imgController.signal });
-    clearTimeout(imgTimeoutId);
-    
-    if (!imgResponse.ok) {
-      throw new Error(`Failed to download image: ${imgResponse.statusText}`);
-    }
+        // Download image
+        const imgController = new AbortController();
+        const imgTimeoutId = setTimeout(() => imgController.abort(), 10000);
+        const imgResponse = await fetch(imageUrl, {
+          signal: imgController.signal,
+        });
+        clearTimeout(imgTimeoutId);
+
+        if (!imgResponse.ok) {
+          throw new Error(
+            `Failed to download image: ${imgResponse.statusText}`
+          );
+        }
 
         const imgData = await imgResponse.arrayBuffer();
         const contentType =
           imgResponse.headers.get("Content-Type") || "image/jpeg";
-        const extension = {
-          "image/jpeg": "jpg",
-          "image/png": "png",
-          "image/webp": "webp",
-          "image/gif": "gif",
-          "image/bmp": "bmp",
-        }[contentType] || "jpg";
+        const extension =
+          {
+            "image/jpeg": "jpg",
+            "image/png": "png",
+            "image/webp": "webp",
+            "image/gif": "gif",
+            "image/bmp": "bmp",
+          }[contentType] || "jpg";
 
         const randomNumber = Math.floor(Math.random() * 9000) + 1000;
-        const filename = `${title.toLowerCase().replace(/\s+/g, "-")}-${randomNumber}.${extension}`;
+        const filename = `${title
+          .toLowerCase()
+          .replace(/\s+/g, "-")}-${randomNumber}.${extension}`;
 
         const mediaHeaders = {
           Authorization: WP_AUTH_HEADER,
@@ -382,6 +417,15 @@ export async function GET(request) {
 // POST endpoint (alternative method)
 export async function POST(request) {
   try {
+    // Check authentication
+    const session = await auth();
+    if (!session || !session.user) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
     const body = await request.json();
     const postContent = body.post_content || "";
     const keyword = body.keyword || "";
@@ -407,7 +451,7 @@ export async function POST(request) {
     if (websiteId) {
       url.searchParams.set("website_id", websiteId);
     }
-    
+
     // Create a new request object with the modified URL
     const newRequest = new Request(url.toString(), {
       method: "GET",
@@ -426,4 +470,3 @@ export async function POST(request) {
     );
   }
 }
-

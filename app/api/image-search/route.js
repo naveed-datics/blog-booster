@@ -1,8 +1,18 @@
 import { NextResponse } from 'next/server';
+import { auth } from '@/lib/auth';
 
 // GET endpoint for image search using SerpAPI
 export async function GET(request) {
   try {
+    // Check authentication
+    const session = await auth();
+    if (!session || !session.user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
     const { searchParams } = new URL(request.url);
     const query = searchParams.get('q') || '';
     const size = searchParams.get('size') || 'l'; // l=large, m=medium, 2mp=2MP+, 4mp=4MP+

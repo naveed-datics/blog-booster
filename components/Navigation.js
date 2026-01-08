@@ -43,24 +43,26 @@ export default function Navigation() {
               <Link href="/dashboard" className="text-xl font-bold text-gray-900 dark:text-white">
                 Blog Booster
               </Link>
-              <div className="hidden sm:ml-6 sm:flex sm:space-x-8">
-                {navItems.map((item) => {
-                  const isActive = pathname === item.href;
-                  return (
-                    <Link
-                      key={item.href}
-                      href={item.href}
-                      className={`inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-colors ${
-                        isActive
-                          ? 'border-blue-500 text-gray-900 dark:text-white'
-                          : 'border-transparent text-gray-500 dark:text-gray-400 hover:border-gray-300 hover:text-gray-700 dark:hover:text-gray-300'
-                      }`}
-                    >
-                      {item.label}
-                    </Link>
-                  );
-                })}
-              </div>
+              {session && (
+                <div className="hidden sm:ml-6 sm:flex sm:space-x-8">
+                  {navItems.map((item) => {
+                    const isActive = pathname === item.href;
+                    return (
+                      <Link
+                        key={item.href}
+                        href={item.href}
+                        className={`inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium transition-colors ${
+                          isActive
+                            ? 'border-blue-500 text-gray-900 dark:text-white'
+                            : 'border-transparent text-gray-500 dark:text-gray-400 hover:border-gray-300 hover:text-gray-700 dark:hover:text-gray-300'
+                        }`}
+                      >
+                        {item.label}
+                      </Link>
+                    );
+                  })}
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-4">
               {status === 'loading' ? (

@@ -1,9 +1,16 @@
 import { NextResponse } from "next/server";
 import { query } from "@/lib/db";
+import { auth } from "@/lib/auth";
 
 // POST endpoint to write blog post
 export async function POST(request) {
   try {
+    // Check authentication
+    const session = await auth();
+    if (!session || !session.user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const { searchParams } = new URL(request.url);
     let keyword = searchParams.get("keyword") || "";
 
@@ -80,7 +87,7 @@ export async function POST(request) {
       );
     }
 
-    // Get website_id from query params or body to fetch custom prompt template
+    // Get website_id from query params or body to fetch custom prompt template and niche
     const websiteId = searchParams.get("website_id");
     console.log("Write-blog API - Received website_id:", websiteId);
     console.log(
@@ -88,26 +95,37 @@ export async function POST(request) {
       Object.fromEntries(searchParams.entries())
     );
     let customPromptTemplate = null;
+    let websiteNiche = null;
 
     if (websiteId) {
       try {
         const websiteResult = await query(
-          "SELECT prompt_template FROM websites WHERE id = $1",
+          "SELECT prompt_template, niche FROM websites WHERE id = $1",
           [parseInt(websiteId)]
         );
-        if (
-          websiteResult.rows.length > 0 &&
-          websiteResult.rows[0].prompt_template &&
-          websiteResult.rows[0].prompt_template.trim()
-        ) {
-          customPromptTemplate = websiteResult.rows[0].prompt_template.trim();
-          console.log(
-            `Using custom prompt template for website_id: ${websiteId}`
-          );
-        } else {
-          console.log(
-            `No custom prompt template found for website_id: ${websiteId}, using default`
-          );
+        if (websiteResult.rows.length > 0) {
+          if (
+            websiteResult.rows[0].prompt_template &&
+            websiteResult.rows[0].prompt_template.trim()
+          ) {
+            customPromptTemplate = websiteResult.rows[0].prompt_template.trim();
+            console.log(
+              `Using custom prompt template for website_id: ${websiteId}`
+            );
+          } else {
+            console.log(
+              `No custom prompt template found for website_id: ${websiteId}, using default`
+            );
+          }
+          if (
+            websiteResult.rows[0].niche &&
+            websiteResult.rows[0].niche.trim()
+          ) {
+            websiteNiche = websiteResult.rows[0].niche.trim();
+            console.log(
+              `Using niche for website_id ${websiteId}: ${websiteNiche}`
+            );
+          }
         }
       } catch (error) {
         console.error("Error fetching custom prompt template:", error);
@@ -117,11 +135,23 @@ export async function POST(request) {
 
     // Define the default simple SEO-optimized prompt template
     const celebrityName = keyword;
+    const nicheContext = websiteNiche
+      ? `\n\nIMPORTANT - FAQ and Related Queries Section:
+- Include a FAQ (Frequently Asked Questions) section at the end of the article
+- Include a Related Queries section at the end of the article
+- ALL FAQ questions and Related Queries MUST be relevant to the niche: "${websiteNiche}"
+- FAQ questions should be about ${celebrityName} in relation to "${websiteNiche}"
+- Related Queries should be search queries people might have about ${celebrityName} related to "${websiteNiche}"
+- Do NOT include random or unrelated questions/queries
+- Format FAQ using <h2>FAQ</h2> and <h3> for each question, with <p> for answers
+- Format Related Queries using <h2>Related Queries</h2> and <ul><li> for each query`
+      : "";
+
     const defaultPromptTemplate = `
 Write a comprehensive SEO-optimized blog post about ${celebrityName} using the provided context. Create ACTUAL content, not template instructions.
 
 Context: ${blogText}
-Focus keyword: ${celebrityName}
+Focus keyword: ${celebrityName}${nicheContext}
 
 Instructions:
 You are an Expert Blog Writer. Write an SEO-friendly blog post in a natural, human tone using the provided context.
@@ -156,7 +186,26 @@ Output Format:
       // User has custom prompt template - use it and replace placeholders
       promptTemplate = customPromptTemplate
         .replace(/\$\{celebrityName\}/g, celebrityName)
-        .replace(/\$\{blogText\}/g, blogText);
+        .replace(/\$\{blogText\}/g, blogText)
+        .replace(/\$\{niche\}/g, websiteNiche || "");
+
+      // If niche is available and custom template doesn't have FAQ/Related Queries instructions, append them
+      if (
+        websiteNiche &&
+        !promptTemplate.includes("FAQ") &&
+        !promptTemplate.includes("Related Queries")
+      ) {
+        promptTemplate += `\n\nIMPORTANT - FAQ and Related Queries Section:
+- Include a FAQ (Frequently Asked Questions) section at the end of the article
+- Include a Related Queries section at the end of the article
+- ALL FAQ questions and Related Queries MUST be relevant to the niche: "${websiteNiche}"
+- FAQ questions should be about ${celebrityName} in relation to "${websiteNiche}"
+- Related Queries should be search queries people might have about ${celebrityName} related to "${websiteNiche}"
+- Do NOT include random or unrelated questions/queries
+- Format FAQ using <h2>FAQ</h2> and <h3> for each question, with <p> for answers
+- Format Related Queries using <h2>Related Queries</h2> and <ul><li> for each query`;
+      }
+
       console.log(
         `Using custom prompt template (length: ${promptTemplate.length})`
       );
@@ -165,7 +214,9 @@ Output Format:
       // (defaultPromptTemplate already has ${celebrityName} and ${blogText} interpolated via template literal)
       promptTemplate = defaultPromptTemplate;
       console.log(
-        `Using default prompt template (website_id: ${websiteId || "none"})`
+        `Using default prompt template (website_id: ${
+          websiteId || "none"
+        }, niche: ${websiteNiche || "none"})`
       );
     }
 

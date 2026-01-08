@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { parseString } from "xml2js";
 import { promisify } from "util";
 import { query } from "@/lib/db";
+import { auth } from "@/lib/auth";
 
 const parseStringAsync = promisify(parseString);
 
@@ -99,6 +100,15 @@ async function fetchSitemapUrls(sitemapUrl) {
  */
 export async function GET(request) {
   try {
+    // Check authentication
+    const session = await auth();
+    if (!session || !session.user) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
     const { searchParams } = new URL(request.url);
     const celebrityName =
       searchParams.get("celebrity_name") ||

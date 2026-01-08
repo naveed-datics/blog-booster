@@ -1,6 +1,38 @@
-import Link from "next/link";
+'use client';
+
+import { useEffect } from 'react';
+import { useSession } from 'next-auth/react';
+import { useRouter } from 'next/navigation';
+import AuthModal from '@/components/AuthModal';
+import { useState } from 'react';
 
 export default function Home() {
+  const { data: session, status } = useSession();
+  const router = useRouter();
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (status === 'authenticated') {
+      router.push('/dashboard');
+    } else if (status === 'unauthenticated') {
+      setAuthModalOpen(true);
+    }
+  }, [status, router]);
+
+  if (status === 'loading') {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-gray-600 dark:text-gray-400">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === 'authenticated') {
+    return null; // Will redirect
+  }
+
   return (
     <div className="min-h-screen p-8">
       <div className="max-w-7xl mx-auto">
@@ -11,28 +43,12 @@ export default function Home() {
           <p className="text-xl text-gray-600 dark:text-gray-400 mb-8">
             Manage your blog analytics, trends, and keywords all in one place.
           </p>
-          <div className="flex gap-4 justify-center">
-            <Link
-              href="/dashboard"
-              className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors"
-            >
-              Go to Dashboard
-            </Link>
-            <Link
-              href="/trends"
-              className="bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-900 dark:text-white font-semibold py-3 px-6 rounded-lg transition-colors"
-            >
-              View Trends
-            </Link>
-            <Link
-              href="/keywords"
-              className="bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-900 dark:text-white font-semibold py-3 px-6 rounded-lg transition-colors"
-            >
-              Manage Keywords
-            </Link>
-          </div>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+            Please sign in to continue
+          </p>
         </div>
-        </div>
+      </div>
+      <AuthModal open={authModalOpen} onOpenChange={setAuthModalOpen} />
     </div>
   );
 }

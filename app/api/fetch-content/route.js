@@ -1,8 +1,18 @@
 import { NextResponse } from 'next/server';
+import { auth } from '@/lib/auth';
 
 // POST endpoint to fetch content from multiple URLs
 export async function POST(request) {
   try {
+    // Check authentication
+    const session = await auth();
+    if (!session || !session.user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
     const body = await request.json();
     const { urls } = body;
 
@@ -141,6 +151,15 @@ export async function POST(request) {
 // GET endpoint for testing (accepts URLs as query parameters)
 export async function GET(request) {
   try {
+    // Check authentication
+    const session = await auth();
+    if (!session || !session.user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
     const { searchParams } = new URL(request.url);
     const url1 = searchParams.get('url1');
     const url2 = searchParams.get('url2');
