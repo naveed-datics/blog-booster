@@ -321,29 +321,53 @@ function humanizeText(text) {
  * Humanize HTML content while preserving tags
  */
 function humanizeHtml(html) {
-  const $ = cheerio.load(html, null, false);
-  
-  // Process all text nodes, excluding script and style tags
-  $('*').each(function() {
-    const $el = $(this);
-    // Skip script and style tags
-    if (this.tagName === 'script' || this.tagName === 'style') {
-      return;
+  try {
+    const $ = cheerio.load(html, null, false);
+    
+    // Process all text nodes by walking the DOM tree
+    const processNodes = ($element) => {
+      $element.contents().each(function() {
+        const node = this;
+        
+        // Skip script and style tags entirely (don't process their contents)
+        if (node.type === 'tag' && (node.tagName === 'script' || node.tagName === 'style')) {
+          return;
+        }
+        
+        // Process text nodes directly
+        if (node.type === 'text') {
+          const originalText = node.data || '';
+          if (originalText && originalText.trim()) {
+            const humanized = humanizeText(originalText);
+            if (humanized !== originalText && humanized.trim()) {
+              // Replace the text node's data directly
+              node.data = humanized;
+            }
+          }
+        } 
+        // Recursively process child elements
+        else if (node.type === 'tag') {
+          processNodes($(node));
+        }
+      });
+    };
+    
+    // Start processing from the root
+    // Check if body exists, otherwise process the entire document
+    if ($('body').length > 0) {
+      processNodes($('body'));
+    } else {
+      processNodes($.root());
     }
     
-    // Process direct text children
-    $el.contents().each(function() {
-      if (this.type === 'text') {
-        const text = $(this).text();
-        if (text.trim()) {
-          const humanized = humanizeText(text);
-          $(this).replaceWith(humanized);
-        }
-      }
-    });
-  });
-  
-  return $.html();
+    const result = $.html();
+    console.log('Humanize: HTML processing complete. Input length:', html.length, 'Output length:', result.length);
+    return result;
+  } catch (error) {
+    console.error('Error in humanizeHtml:', error);
+    // Fallback: return original HTML if processing fails
+    return html;
+  }
 }
 
 export async function POST(request) {
@@ -368,7 +392,10 @@ export async function POST(request) {
     }
 
     // First apply local humanization (fast, deterministic)
+    console.log('Humanize API: Starting local humanization, input length:', html.length);
     let localResult = humanizeHtml(html);
+    console.log('Humanize API: Local humanization completed, output length:', localResult.length);
+    console.log('Humanize API: Content changed:', localResult !== html);
 
     // If AI pass is requested
     if (call_ai) {
@@ -412,7 +439,7 @@ export async function POST(request) {
             messages: [
               {
                 role: 'system',
-                content: 'Keep all HTML tags exactly as they are. Do not change the HTML. Keep it the same and make sure all closing tags are closed properly. Do not use long and short dash (—). NO CONTRACTIONS! Write "I will" instead of "I\'ll", "it is" instead of "it\'s". Keep punctuation simple. Do not change tags.'
+                content: 'You are a content humanizer. Rewrite the text content to make it sound more natural and human-like while preserving ALL HTML tags exactly as they are. Rules: 1) Keep all HTML tags unchanged, 2) Only modify the text content inside tags, 3) Make the writing more conversational and natural, 4) Do not use em dashes (—), 5) NO CONTRACTIONS! Write "I will" instead of "I\'ll", "it is" instead of "it\'s", 6) Keep punctuation simple, 7) Ensure all HTML tags are properly closed. The HTML structure must remain identical - only the text content should be rewritten to sound more human.'
               },
               {
                 role: 'user',

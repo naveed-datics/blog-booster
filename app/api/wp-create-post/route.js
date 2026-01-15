@@ -17,9 +17,20 @@ function slugify(s) {
 }
 
 // Find image using existing image search API
-async function findImage(celebrityName, cookies = "") {
+async function findImage(celebrityName, cookies = "", request = null) {
   try {
-    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+    // Get base URL from request headers if available
+    let baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+    if (request) {
+      const host = request.headers.get("host");
+      const protocol =
+        request.headers.get("x-forwarded-proto") ||
+        (request.headers.get("x-forwarded-ssl") === "on" ? "https" : "http");
+      if (host) {
+        baseUrl = `${protocol}://${host}`;
+      }
+    }
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
@@ -27,7 +38,7 @@ async function findImage(celebrityName, cookies = "") {
       `${baseUrl}/api/image-search?q=${encodeURIComponent(
         celebrityName
       )}&limit=1`,
-      { 
+      {
         signal: controller.signal,
         headers: {
           Cookie: cookies,
@@ -42,7 +53,10 @@ async function findImage(celebrityName, cookies = "") {
       const contentType = response.headers.get("content-type") || "";
       if (!contentType.includes("application/json")) {
         const errorText = await response.text();
-        console.error("Image search API returned non-JSON response:", errorText.substring(0, 200));
+        console.error(
+          "Image search API returned non-JSON response:",
+          errorText.substring(0, 200)
+        );
         return null;
       }
       const data = await response.json();
@@ -59,7 +73,10 @@ async function findImage(celebrityName, cookies = "") {
       }
     } else {
       const errorText = await response.text();
-      console.error(`Image search API error: ${response.status}`, errorText.substring(0, 200));
+      console.error(
+        `Image search API error: ${response.status}`,
+        errorText.substring(0, 200)
+      );
     }
     return null;
   } catch (error) {
@@ -190,10 +207,7 @@ export async function GET(request) {
     // Check authentication
     const session = await auth();
     if (!session || !session.user) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
@@ -235,8 +249,10 @@ export async function GET(request) {
     // Get cookies from the request to pass to image search API
     const cookies = request.headers.get("cookie") || "";
 
-    // Step 2: Find image
-    const imageUrl = await findImage(celebrityName, cookies);
+    // Step 2: Find image (use provided image_url if available, otherwise search)
+    const providedImageUrl = searchParams.get("image_url") || null;
+    const imageUrl =
+      providedImageUrl || (await findImage(celebrityName, cookies, request));
 
     // Step 3: Generate SEO title & description
     const { seoTitle, metaDescription } = await generateSEOContent(
@@ -311,7 +327,9 @@ export async function GET(request) {
           return NextResponse.json(
             {
               error: "Failed to upload featured image",
-              message: `Image upload failed: ${mediaResponse.status} ${mediaResponse.statusText}. ${errorText.substring(0, 200)}`,
+              message: `Image upload failed: ${mediaResponse.status} ${
+                mediaResponse.statusText
+              }. ${errorText.substring(0, 200)}`,
             },
             { status: 400 }
           );
@@ -333,9 +351,12 @@ export async function GET(request) {
           headers: headersJson,
           body: JSON.stringify(patchData),
         });
-        
+
         if (!patchResponse.ok) {
-          console.error(`Failed to update media metadata:`, await patchResponse.text());
+          console.error(
+            `Failed to update media metadata:`,
+            await patchResponse.text()
+          );
           // Continue even if metadata update fails - image is uploaded
         }
       } catch (error) {
@@ -373,7 +394,7 @@ export async function GET(request) {
     const postPayload = {
       title: seoTitle,
       content: postContentFinal,
-      status: "draft",
+      status: "published",
       slug: slugVal,
       author: 2,
       featured_media: mediaId, // Required - post will not be created without it
@@ -406,18 +427,25 @@ export async function GET(request) {
     const postId = postData.id;
 
     // Verify featured_media was set in the post
-    if (mediaId && (!postData.featured_media || postData.featured_media !== mediaId)) {
+    if (
+      mediaId &&
+      (!postData.featured_media || postData.featured_media !== mediaId)
+    ) {
       // Featured image wasn't set, try to set it now
-      console.log(`Featured image not set in post creation, attempting to set now...`);
+      console.log(
+        `Featured image not set in post creation, attempting to set now...`
+      );
       try {
         const updateResponse = await fetch(`${WP_BASE}/posts/${postId}`, {
           method: "PUT",
           headers: headersJson,
           body: JSON.stringify({ featured_media: mediaId }),
         });
-        
+
         if (updateResponse.ok) {
-          console.log(`Featured image ${mediaId} successfully attached to post ${postId}`);
+          console.log(
+            `Featured image ${mediaId} successfully attached to post ${postId}`
+          );
         } else {
           const updateErrorText = await updateResponse.text();
           console.error(`Failed to set featured image for post ${postId}:`, {
@@ -436,13 +464,16 @@ export async function GET(request) {
     // If mediaId is not set at this point, it means the initial upload failed
     // and the post should not have been created
     if (!mediaId) {
-      console.error("CRITICAL: Post was created but mediaId is not set. This should not happen.");
+      console.error(
+        "CRITICAL: Post was created but mediaId is not set. This should not happen."
+      );
     }
 
     // Save to database via API
     if (websiteId) {
       try {
-        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+        const baseUrl =
+          process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
         const saveResponse = await fetch(`${baseUrl}/api/wordpress-posts`, {
           method: "POST",
           headers: {
@@ -461,9 +492,12 @@ export async function GET(request) {
             meta_description: metaDescription,
           }),
         });
-        
+
         if (!saveResponse.ok) {
-          console.error("Failed to save WordPress post to database:", await saveResponse.text());
+          console.error(
+            "Failed to save WordPress post to database:",
+            await saveResponse.text()
+          );
         }
       } catch (error) {
         console.error("Error saving WordPress post to database:", error);
@@ -474,7 +508,7 @@ export async function GET(request) {
       status: "success",
       post_id: postId,
       media_id: mediaId || null,
-      message: mediaId 
+      message: mediaId
         ? `Post ID ${postId} created with featured image ID ${mediaId}`
         : `Post ${postId} created successfully`,
       title: seoTitle,
@@ -500,10 +534,7 @@ export async function POST(request) {
     // Check authentication
     const session = await auth();
     if (!session || !session.user) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const body = await request.json();
@@ -545,8 +576,10 @@ export async function POST(request) {
     // Get cookies from the request to pass to image search API
     const cookies = request.headers.get("cookie") || "";
 
-    // Step 2: Find image
-    const imageUrl = await findImage(celebrityName, cookies);
+    // Step 2: Find image (use provided image_url if available, otherwise search)
+    const providedImageUrl = body.image_url || null;
+    const imageUrl =
+      providedImageUrl || (await findImage(celebrityName, cookies, request));
 
     // Step 3: Generate SEO title & description
     const { seoTitle, metaDescription } = await generateSEOContent(
@@ -621,7 +654,9 @@ export async function POST(request) {
           return NextResponse.json(
             {
               error: "Failed to upload featured image",
-              message: `Image upload failed: ${mediaResponse.status} ${mediaResponse.statusText}. ${errorText.substring(0, 200)}`,
+              message: `Image upload failed: ${mediaResponse.status} ${
+                mediaResponse.statusText
+              }. ${errorText.substring(0, 200)}`,
             },
             { status: 400 }
           );
@@ -643,9 +678,12 @@ export async function POST(request) {
           headers: headersJson,
           body: JSON.stringify(patchData),
         });
-        
+
         if (!patchResponse.ok) {
-          console.error(`Failed to update media metadata:`, await patchResponse.text());
+          console.error(
+            `Failed to update media metadata:`,
+            await patchResponse.text()
+          );
           // Continue even if metadata update fails - image is uploaded
         }
       } catch (error) {
@@ -683,7 +721,7 @@ export async function POST(request) {
     const postPayload = {
       title: seoTitle,
       content: postContentFinal,
-      status: "draft",
+      status: "publish",
       slug: slugVal,
       author: 2,
       featured_media: mediaId, // Required - post will not be created without it
@@ -716,18 +754,25 @@ export async function POST(request) {
     const postId = postData.id;
 
     // Verify featured_media was set in the post
-    if (mediaId && (!postData.featured_media || postData.featured_media !== mediaId)) {
+    if (
+      mediaId &&
+      (!postData.featured_media || postData.featured_media !== mediaId)
+    ) {
       // Featured image wasn't set, try to set it now
-      console.log(`Featured image not set in post creation, attempting to set now...`);
+      console.log(
+        `Featured image not set in post creation, attempting to set now...`
+      );
       try {
         const updateResponse = await fetch(`${WP_BASE}/posts/${postId}`, {
           method: "PUT",
           headers: headersJson,
           body: JSON.stringify({ featured_media: mediaId }),
         });
-        
+
         if (updateResponse.ok) {
-          console.log(`Featured image ${mediaId} successfully attached to post ${postId}`);
+          console.log(
+            `Featured image ${mediaId} successfully attached to post ${postId}`
+          );
         } else {
           const updateErrorText = await updateResponse.text();
           console.error(`Failed to set featured image for post ${postId}:`, {
@@ -746,13 +791,16 @@ export async function POST(request) {
     // If mediaId is not set at this point, it means the initial upload failed
     // and the post should not have been created
     if (!mediaId) {
-      console.error("CRITICAL: Post was created but mediaId is not set. This should not happen.");
+      console.error(
+        "CRITICAL: Post was created but mediaId is not set. This should not happen."
+      );
     }
 
     // Save to database via API
     if (websiteId) {
       try {
-        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+        const baseUrl =
+          process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
         const saveResponse = await fetch(`${baseUrl}/api/wordpress-posts`, {
           method: "POST",
           headers: {
@@ -771,9 +819,12 @@ export async function POST(request) {
             meta_description: metaDescription,
           }),
         });
-        
+
         if (!saveResponse.ok) {
-          console.error("Failed to save WordPress post to database:", await saveResponse.text());
+          console.error(
+            "Failed to save WordPress post to database:",
+            await saveResponse.text()
+          );
         }
       } catch (error) {
         console.error("Error saving WordPress post to database:", error);
@@ -784,7 +835,7 @@ export async function POST(request) {
       status: "success",
       post_id: postId,
       media_id: mediaId || null,
-      message: mediaId 
+      message: mediaId
         ? `Post ID ${postId} created with featured image ID ${mediaId}`
         : `Post ${postId} created successfully`,
       title: seoTitle,

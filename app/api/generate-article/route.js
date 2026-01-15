@@ -1,8 +1,18 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 
-// Helper function to get base URL
-function getBaseUrl() {
+// Helper function to get base URL from request
+function getBaseUrl(request) {
+  // Try to get from request headers first (for internal calls)
+  const host = request.headers.get("host");
+  const protocol = request.headers.get("x-forwarded-proto") || 
+                   (request.headers.get("x-forwarded-ssl") === "on" ? "https" : "http");
+  
+  if (host) {
+    return `${protocol}://${host}`;
+  }
+  
+  // Fallback to environment variables
   if (process.env.NEXT_PUBLIC_BASE_URL) {
     return process.env.NEXT_PUBLIC_BASE_URL;
   }
@@ -60,12 +70,14 @@ export async function POST(request) {
       );
     }
 
-    const baseUrl = getBaseUrl();
+    const baseUrl = getBaseUrl(request);
     const steps = [];
     let finalResult = null;
 
     // Get cookies from the original request to pass to internal API calls
     const cookies = request.headers.get("cookie") || "";
+    
+    console.log(`[Generate Article] Using base URL: ${baseUrl} for celebrity: ${celebrityName}`);
 
     // Check if client wants streaming (SSE)
     const useStreaming = request.headers.get("accept")?.includes("text/event-stream");
@@ -74,7 +86,33 @@ export async function POST(request) {
     // For now, collect steps and return at end, but we can enhance later
     
     try {
-      // Step 1: Find Sources
+      // Step 1: Image Search (Find Image)
+      steps.push({ step: "Searching for images...", status: "in_progress" });
+      const imageSearchResponse = await fetch(
+        `${baseUrl}/api/image-search?q=${encodeURIComponent(celebrityName)}`,
+        {
+          headers: {
+            Cookie: cookies,
+          },
+        }
+      );
+      
+      if (!imageSearchResponse.ok) {
+        const errorText = await imageSearchResponse.text();
+        throw new Error(`Failed to search images: ${imageSearchResponse.status} ${imageSearchResponse.statusText}. ${errorText.substring(0, 200)}`);
+      }
+      
+      // Check if response is JSON
+      const imageContentType = imageSearchResponse.headers.get("content-type") || "";
+      if (!imageContentType.includes("application/json")) {
+        const errorText = await imageSearchResponse.text();
+        throw new Error(`Invalid response from image-search API. Expected JSON but got: ${imageContentType}. Response: ${errorText.substring(0, 200)}`);
+      }
+      
+      const imageData = await imageSearchResponse.json();
+      steps.push({ step: "Found images", status: "completed", data: imageData });
+
+      // Step 2: Find Sources
       steps.push({ step: "Finding sources...", status: "in_progress" });
       const findSourcesResponse = await fetch(
         `${baseUrl}/api/find-sources?q=${encodeURIComponent(celebrityName)}`,
@@ -106,32 +144,6 @@ export async function POST(request) {
         sourcesData.religionURL,
         sourcesData.religion,
       ].filter(Boolean);
-
-      // Step 2: Image Search
-      steps.push({ step: "Searching for images...", status: "in_progress" });
-      const imageSearchResponse = await fetch(
-        `${baseUrl}/api/image-search?q=${encodeURIComponent(celebrityName)}`,
-        {
-          headers: {
-            Cookie: cookies,
-          },
-        }
-      );
-      
-      if (!imageSearchResponse.ok) {
-        const errorText = await imageSearchResponse.text();
-        throw new Error(`Failed to search images: ${imageSearchResponse.status} ${imageSearchResponse.statusText}. ${errorText.substring(0, 200)}`);
-      }
-      
-      // Check if response is JSON
-      const imageContentType = imageSearchResponse.headers.get("content-type") || "";
-      if (!imageContentType.includes("application/json")) {
-        const errorText = await imageSearchResponse.text();
-        throw new Error(`Invalid response from image-search API. Expected JSON but got: ${imageContentType}. Response: ${errorText.substring(0, 200)}`);
-      }
-      
-      const imageData = await imageSearchResponse.json();
-      steps.push({ step: "Found images", status: "completed", data: imageData });
 
       // Step 3: Fetch Content from all URLs
       if (urls.length > 0) {
@@ -233,6 +245,7 @@ export async function POST(request) {
                 post_content: humanizedContent,
                 keyword: celebrityName,
                 website_id: websiteId || null,
+                image_url: imageData.url || null, // Pass the image URL from image search
               }),
             });
             

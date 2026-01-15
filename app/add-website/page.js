@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Plus, Trash2, Edit, Check, X } from "lucide-react";
+import { Plus, Trash2, Edit, Check, X, RefreshCw } from "lucide-react";
 
 export default function AddWebsitePage() {
   const { data: session, status } = useSession();
@@ -26,6 +26,8 @@ export default function AddWebsitePage() {
   const [niche, setNiche] = useState("");
   const [sitemap, setSitemap] = useState("");
   const [promptTemplate, setPromptTemplate] = useState("");
+  const [autoMode, setAutoMode] = useState(false);
+  const [fetchingTimes, setFetchingTimes] = useState("");
 
   // Edit form state
   const [editForm, setEditForm] = useState({
@@ -37,6 +39,8 @@ export default function AddWebsitePage() {
     sitemap: "",
     prompt_template: "",
     is_active: true,
+    auto_mode: false,
+    fetching_times: "",
   });
 
   useEffect(() => {
@@ -97,6 +101,8 @@ export default function AddWebsitePage() {
           niche: niche,
           sitemap: sitemap,
           prompt_template: promptTemplate,
+          auto_mode: autoMode,
+          fetching_times: fetchingTimes,
         }),
       });
 
@@ -148,6 +154,8 @@ export default function AddWebsitePage() {
       sitemap: website.sitemap || "",
       prompt_template: website.prompt_template || "",
       is_active: website.is_active,
+      auto_mode: website.auto_mode || false,
+      fetching_times: website.fetching_times || "",
     });
   };
 
@@ -182,6 +190,8 @@ export default function AddWebsitePage() {
     setNiche("");
     setSitemap("");
     setPromptTemplate("");
+    setAutoMode(false);
+    setFetchingTimes("");
   };
 
   if (status === "loading" || fetching) {
@@ -283,6 +293,34 @@ export default function AddWebsitePage() {
                 Leave empty to use default template. Use <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">${`{celebrityName}`}</code> and <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">${`{blogText}`}</code> as placeholders.
               </p>
             </div>
+            <div className="flex items-center gap-4 py-2">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="auto_mode"
+                  checked={autoMode}
+                  onChange={(e) => setAutoMode(e.target.checked)}
+                  className="w-4 h-4 rounded border-gray-300"
+                />
+                <Label htmlFor="auto_mode" className="cursor-pointer">Auto Mode</Label>
+              </div>
+            </div>
+
+            {autoMode && (
+              <div className="space-y-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                <Label htmlFor="fetching_times">Fetching Times (e.g., 10AM, 12PM)</Label>
+                <Input
+                  id="fetching_times"
+                  type="text"
+                  value={fetchingTimes}
+                  onChange={(e) => setFetchingTimes(e.target.value)}
+                  placeholder="10AM, 10PM"
+                />
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Enter times separated by commas. These will be used for automated trend fetching.
+                </p>
+              </div>
+            )}
             {error && (
               <div className="p-3 bg-red-100 dark:bg-red-900/30 border border-red-400 dark:border-red-700 text-red-700 dark:text-red-400 rounded-lg text-sm">
                 {error}
@@ -403,6 +441,33 @@ export default function AddWebsitePage() {
                         />
                         <Label htmlFor={`active-${website.id}`}>Active</Label>
                       </div>
+                      <div className="flex flex-col gap-3 p-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            id={`auto-mode-${website.id}`}
+                            checked={editForm.auto_mode}
+                            onChange={(e) =>
+                              setEditForm({ ...editForm, auto_mode: e.target.checked })
+                            }
+                            className="w-4 h-4"
+                          />
+                          <Label htmlFor={`auto-mode-${website.id}`} className="cursor-pointer font-semibold">Auto Mode</Label>
+                        </div>
+                        
+                        {editForm.auto_mode && (
+                          <div className="space-y-2 ml-6 animate-in fade-in slide-in-from-left-1 duration-200">
+                            <Label>Fetching Times (e.g., 10AM, 10PM)</Label>
+                            <Input
+                              value={editForm.fetching_times}
+                              onChange={(e) =>
+                                setEditForm({ ...editForm, fetching_times: e.target.value })
+                              }
+                              placeholder="10AM, 10PM"
+                            />
+                          </div>
+                        )}
+                      </div>
                       <div className="flex gap-2">
                         <Button
                           onClick={() => handleUpdate(website.id)}
@@ -453,10 +518,16 @@ export default function AddWebsitePage() {
                               website.is_active
                                 ? "text-green-600 dark:text-green-400"
                                 : "text-gray-400"
-                            }`}
+                             }`}
                           >
                             {website.is_active ? "Active" : "Inactive"}
                           </span>
+                          {website.auto_mode && (
+                            <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400 font-medium">
+                              <RefreshCw className="h-3 w-3" />
+                              Auto: {website.fetching_times}
+                            </span>
+                          )}
                         </div>
                       </div>
                       <div className="flex gap-2">

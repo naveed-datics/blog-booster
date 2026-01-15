@@ -9,7 +9,8 @@
     "lint": "eslint",
     "migrate": "node lib/migrations/run-migration.mjs",
     "migrate:auth": "node lib/migrations/run-auth-migration.mjs",
-    "migrate:niche": "node lib/migrations/run-niche-migration.mjs"
+    "migrate:niche": "node lib/migrations/run-niche-migration.mjs",
+    "migrate:trend-website": "node lib/migrations/run-website-id-migration.mjs"
   },
   "dependencies": {
     "@copilotkit/react-core": "^1.50.1",

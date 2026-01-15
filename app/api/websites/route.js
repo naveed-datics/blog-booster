@@ -17,7 +17,7 @@ export async function GET(request) {
     const userId = parseInt(session.user.id);
 
     const result = await query(
-      'SELECT id, website_url, api_key, website_name, description, niche, sitemap, prompt_template, is_active, created_at, updated_at FROM websites WHERE user_id = $1 ORDER BY created_at DESC',
+      'SELECT id, website_url, api_key, website_name, description, niche, sitemap, prompt_template, auto_mode, fetching_times, is_active, created_at, updated_at FROM websites WHERE user_id = $1 ORDER BY created_at DESC',
       [userId]
     );
 
@@ -46,7 +46,7 @@ export async function POST(request) {
     }
 
     const userId = parseInt(session.user.id);
-    const { website_url, api_key, website_name, description, niche, sitemap, prompt_template } = await request.json();
+    const { website_url, api_key, website_name, description, niche, sitemap, prompt_template, auto_mode, fetching_times } = await request.json();
 
     // Validation
     if (!website_url || !website_url.trim()) {
@@ -81,8 +81,8 @@ export async function POST(request) {
 
     // Insert new website
     const result = await query(
-      'INSERT INTO websites (user_id, website_url, api_key, website_name, description, niche, sitemap, prompt_template) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, website_url, website_name, description, niche, sitemap, prompt_template, is_active, created_at',
-      [userId, website_url.trim(), api_key?.trim() || null, website_name?.trim() || null, description?.trim() || null, niche?.trim() || null, sitemap?.trim() || null, prompt_template?.trim() || null]
+      'INSERT INTO websites (user_id, website_url, api_key, website_name, description, niche, sitemap, prompt_template, auto_mode, fetching_times) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id, website_url, website_name, description, niche, sitemap, prompt_template, auto_mode, fetching_times, is_active, created_at',
+      [userId, website_url.trim(), api_key?.trim() || null, website_name?.trim() || null, description?.trim() || null, niche?.trim() || null, sitemap?.trim() || null, prompt_template?.trim() || null, auto_mode === true, fetching_times?.trim() || null]
     );
 
     return NextResponse.json(

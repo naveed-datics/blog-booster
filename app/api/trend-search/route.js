@@ -94,7 +94,7 @@ async function searchCelebrityUrl(celebrity) {
 }
 
 // Helper function to save trends to database
-async function saveTrendsToDatabase(searchQuery, trendsResult, celebList, results) {
+async function saveTrendsToDatabase(searchQuery, trendsResult, celebList, results, websiteId = null) {
   let savedCount = 0;
   let skippedCount = 0;
   
@@ -134,7 +134,12 @@ async function saveTrendsToDatabase(searchQuery, trendsResult, celebList, result
         'taiwan', 'thailand', 'vietnam', 'indonesia', 'philippines', 'malaysia',
         'singapore', 'bangladesh', 'pakistan', 'afghanistan', 'iraq', 'syria',
         'lebanon', 'jordan', 'saudi', 'uae', 'qatar', 'kuwait', 'bahrain', 'oman',
-        'shakers', 'whoever', 'whatever', 'whenever', 'wherever', 'however'
+        'shakers', 'whoever', 'whatever', 'whenever', 'wherever', 'however',
+        // Additional explicit non-celebrity topics
+        'christianity', 'islam', 'hinduism', 'buddhism', 'judaism',
+        'sikhism', 'atheism', 'agnosticism',
+        'roman', 'roman empire',
+        'kyrgyzstan', 'egypt major'
       ];
       
       // Check if name is valid
@@ -150,21 +155,26 @@ async function saveTrendsToDatabase(searchQuery, trendsResult, celebList, result
         lowerName.includes('main religion') ||
         lowerName.length < 3; // Minimum 3 characters
       
+      // Require at least two words (first + last name) to reduce generic single-word terms
+      const wordCount = cleanCelebName ? cleanCelebName.split(/\s+/).length : 0;
+      
       if (cleanCelebName && 
           cleanCelebName.length >= 3 &&
-          !isInvalid) {
+          !isInvalid &&
+          wordCount >= 2) {
         
         try {
           await query(
-            `INSERT INTO trends (search_query, trend_text, celebrity_name, trend_value, url, website_result)
-             VALUES ($1, $2, $3, $4, $5, $6)`,
+            `INSERT INTO trends (search_query, trend_text, celebrity_name, trend_value, url, website_result, website_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
             [
               searchQuery,
               formattedTrend,
               cleanCelebName,
               rawTrend.value || null,
               result.URL || null,
-              result.website_result || null
+              result.website_result || null,
+              websiteId || null
             ]
           );
           savedCount++;
@@ -215,20 +225,30 @@ async function extractCelebrities(trendsResult) {
     const endpoint = azureEndpoint.replace(/\/$/, '');
     const azureUrl = `${endpoint}/openai/deployments/${azureDeploymentName}/chat/completions?api-version=${azureApiVersion}`;
 
-    const systemPrompt = `You are a helpful assistant with access to recent search trend data. Your task is to analyze the provided list of trending search terms (which may be formatted as "1. query value *") and extract ONLY the names of celebrities (actors, musicians, athletes, public figures, influencers, etc.). 
+    const systemPrompt = `You are a celebrity-name extraction assistant.
 
-CRITICAL RULES:
-- Return ONLY a valid JSON array string, formatted exactly as ["name1", "name2", ...]
-- Each name must be ONLY the celebrity's full name - no extra words, no percentages, no "religion", no countries, no products
-- IGNORE and EXCLUDE: countries (e.g., "iran", "usa"), products (e.g., "true religion jeans"), websites (e.g., "infocatolica"), religions, generic terms
-- Extract just the celebrity name from formatted strings like "1. Emil Bove +5000% *" should become "Emil Bove"
-- If a term is "iran religion" or "true religion jeans", return null or empty string for that entry - DO NOT include it
-- If you cannot identify a clear celebrity name, return null for that entry
-- Return an array where non-celebrity entries are null or empty strings
+You receive a list of trending search terms (for example: "1. Emil Bove +5000% *").
+Your job is to return ONLY names of INDIVIDUAL PEOPLE (celebrities).
 
-Example: For ["1. iran religion +50%", "2. brahim diaz +110%", "3. true religion jeans +4400%"], return [null, "Brahim Diaz", null]
+DEFINITIONS:
+- Celebrity = a specific human individual or stage name (actor, musician, athlete, politician, influencer, etc.).
+- NOT allowed: countries, cities, regions, religions, languages, brands, products, TV shows, movies, games, generic topics.
 
-Return ONLY the JSON array, no explanations, no code blocks, no outer quotes.`;
+STRICT RULES:
+- Return ONLY a valid JSON array, exactly like: ["Brahim Diaz", "Taylor Swift", null, ...]
+- For each input item:
+  - If it clearly refers to a person, return the cleaned full name.
+  - If it is a country (e.g. "Kyrgyzstan"), religion ("Christianity", "Hinduism"), place, generic term, or you are unsure, return null.
+- NEVER return:
+  - Country or region names (e.g. "Kyrgyzstan", "Romania").
+  - Religions ("Christianity", "Islam", "Hinduism", "Buddhism", "Judaism", etc.).
+  - Generic words like "religion", "Roman", "Christianity vs Islam", "AI jeans", etc.
+- From strings like "1. emil bove religion +5000% *":
+  - Extract only "Emil Bove".
+- If you cannot confidently identify a human person, return null for that entry.
+
+IMPORTANT:
+- Output ONLY the JSON array, with no explanations, no code blocks, no backticks, no outer quotes.`;
 
     const userPrompt = `Analyze these trending search terms and extract celebrity names:\n${JSON.stringify(trendsResult.formatted)}`;
 
@@ -311,7 +331,12 @@ Return ONLY the JSON array, no explanations, no code blocks, no outer quotes.`;
           'taiwan', 'thailand', 'vietnam', 'indonesia', 'philippines', 'malaysia',
           'singapore', 'bangladesh', 'pakistan', 'afghanistan', 'iraq', 'syria',
           'lebanon', 'jordan', 'saudi', 'uae', 'qatar', 'kuwait', 'bahrain', 'oman',
-          'shakers', 'whoever', 'whatever', 'whenever', 'wherever', 'however'
+          'shakers', 'whoever', 'whatever', 'whenever', 'wherever', 'however',
+          // Additional explicit non-celebrity topics
+          'christianity', 'islam', 'hinduism', 'buddhism', 'judaism',
+          'sikhism', 'atheism', 'agnosticism',
+          'roman', 'roman empire',
+          'kyrgyzstan', 'egypt major'
         ];
         
         // Filter out null, empty strings, and non-celebrity terms
@@ -336,6 +361,12 @@ Return ONLY the JSON array, no explanations, no code blocks, no outer quotes.`;
             lowerName.includes('whoever');
           
           if (isInvalid) {
+            return null;
+          }
+
+          // Require at least two words (first + last name) to reduce generic single-word terms
+          const wordCount = cleanName.split(/\s+/).length;
+          if (wordCount < 2) {
             return null;
           }
           
@@ -429,6 +460,7 @@ export async function GET(request) {
 
     const { searchParams } = new URL(request.url);
     const query = searchParams.get('q') || 'religion';
+    const websiteId = searchParams.get('website_id') ? parseInt(searchParams.get('website_id')) : null;
 
     // Get rising trends
     const trendsResult = await getRisingTrends(query);
@@ -482,7 +514,7 @@ export async function GET(request) {
     let savedCount = 0;
     let skippedCount = 0;
     try {
-      const saveResult = await saveTrendsToDatabase(query, trendsResult, celebList, results);
+      const saveResult = await saveTrendsToDatabase(query, trendsResult, celebList, results, websiteId);
       savedCount = saveResult?.savedCount || 0;
       skippedCount = saveResult?.skippedCount || 0;
       console.log(`✅ Successfully saved ${savedCount} trends to database (skipped ${skippedCount})`);

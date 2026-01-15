@@ -33,7 +33,7 @@ export async function PUT(request, { params }) {
       );
     }
 
-    const { website_url, api_key, website_name, description, niche, sitemap, prompt_template, is_active } = await request.json();
+    const { website_url, api_key, website_name, description, niche, sitemap, prompt_template, is_active, auto_mode, fetching_times } = await request.json();
 
     // Verify the website belongs to the user
     const existing = await query(
@@ -107,6 +107,17 @@ export async function PUT(request, { params }) {
       updateValues.push(activeValue);
       paramIndex++;
     }
+    if (auto_mode !== undefined && auto_mode !== null) {
+      updateFields.push(`auto_mode = $${paramIndex}`);
+      const autoValue = auto_mode === true || auto_mode === 'true' || auto_mode === 1;
+      updateValues.push(autoValue);
+      paramIndex++;
+    }
+    if (fetching_times !== undefined && fetching_times !== null) {
+      updateFields.push(`fetching_times = $${paramIndex}`);
+      updateValues.push(fetching_times.trim() || null);
+      paramIndex++;
+    }
 
     // Always update updated_at
     updateFields.push(`updated_at = NOW()`);
@@ -133,7 +144,7 @@ export async function PUT(request, { params }) {
     const sql = `UPDATE websites 
                  SET ${updateFields.join(', ')}
                  WHERE id = $${paramIndex} AND user_id = $${paramIndex + 1}
-                 RETURNING id, website_url, api_key, website_name, description, niche, sitemap, prompt_template, is_active, updated_at`;
+                 RETURNING id, website_url, api_key, website_name, description, niche, sitemap, prompt_template, is_active, auto_mode, fetching_times, updated_at`;
 
     const result = await query(sql, updateValues);
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter, useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -12,12 +12,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ArrowLeft,
   RefreshCw,
   ChevronDown,
   FileEdit,
   ExternalLink,
+  Play,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -33,9 +35,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Switch } from "@/components/ui/switch";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 
 export default function AIDashboardPage() {
   const { data: session, status } = useSession();
@@ -48,34 +47,20 @@ export default function AIDashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [fetchingTrends, setFetchingTrends] = useState(false);
-  const [loadedDates, setLoadedDates] = useState(new Set());
-  const [availableDates, setAvailableDates] = useState([]);
+  const [offset, setOffset] = useState(0);
+  const [totalRecords, setTotalRecords] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [celebrityUrls, setCelebrityUrls] = useState({}); // Map of celebrity_name -> { url: string, lastmod: string | null }
   const [searchingUrls, setSearchingUrls] = useState(false);
   const [generatingArticle, setGeneratingArticle] = useState(false);
-  const [articleDialogOpen, setArticleDialogOpen] = useState(false);
   const [generatedArticle, setGeneratedArticle] = useState(null);
+  const [articleDialogOpen, setArticleDialogOpen] = useState(false);
   const [generationSteps, setGenerationSteps] = useState([]);
-  const [autoMode, setAutoMode] = useState(false);
-  const [autoIntervalHours, setAutoIntervalHours] = useState(24);
-  const [autoModeActive, setAutoModeActive] = useState(false);
-  const [nextAutoRun, setNextAutoRun] = useState(null);
-  const [currentAutoStep, setCurrentAutoStep] = useState("");
-
-  // Load auto mode state from localStorage on mount
-  useEffect(() => {
-    if (typeof window !== "undefined" && websiteId) {
-      const savedAutoMode = localStorage.getItem(`autoMode_${websiteId}`);
-      const savedInterval = localStorage.getItem(`autoInterval_${websiteId}`);
-      if (savedAutoMode === "true") {
-        setAutoMode(true);
-      }
-      if (savedInterval) {
-        setAutoIntervalHours(parseInt(savedInterval) || 24);
-      }
-    }
-  }, [websiteId]);
+  const [dailyAutoArticleCount, setDailyAutoArticleCount] = useState(0);
+  const [lastAutoArticleHour, setLastAutoArticleHour] = useState(null);
+  const [processingQueue, setProcessingQueue] = useState(false);
+  const [autoModeStartTime, setAutoModeStartTime] = useState(null);
+  const [processingItems, setProcessingItems] = useState(new Set()); // Track items currently being processed
 
   useEffect(() => {
     if (status === "unauthenticated") {
@@ -84,6 +69,207 @@ export default function AIDashboardPage() {
       fetchWebsiteData();
     }
   }, [status, websiteId, router]);
+
+  // Automation Logic: Trigger fetchTrends automatically if time matches
+  useEffect(() => {
+    if (!website?.auto_mode || !website?.fetching_times) return;
+
+    const interval = setInterval(() => {
+      const now = new Date();
+      // Pakistan Time (UTC +5)
+      const pktTime = new Date(now.getTime() + 5 * 60 * 60 * 1000);
+      const hours = pktTime.getUTCHours();
+      const minutes = pktTime.getUTCMinutes();
+      const seconds = pktTime.getUTCSeconds();
+
+      // Trigger only at the start of the minute (seconds === 0)
+      if (seconds === 0) {
+        // Current time in multiple formats for better matching
+        const ampm = hours >= 12 ? "PM" : "AM";
+        const h12 = hours % 12 || 12;
+
+        // Formats to check: "10AM", "10:00AM", "10:00 AM", "07:40 PM", "7:40PM"
+        const currentHHMM_AMPM = `${h12.toString().padStart(2, "0")}:${minutes
+          .toString()
+          .padStart(2, "0")} ${ampm}`;
+        const currentHMM_AMPM = `${h12}:${minutes
+          .toString()
+          .padStart(2, "0")}${ampm}`;
+        const currentH_AMPM = minutes === 0 ? `${h12}${ampm}` : null;
+        const currentHH_AMPM =
+          minutes === 0 ? `${h12.toString().padStart(2, "0")}${ampm}` : null;
+
+        const scheduledTimes = website.fetching_times
+          .split(",")
+          .map((t) => t.trim().toUpperCase());
+
+        const isMatch = scheduledTimes.some((time) => {
+          // Normalize user input (remove spaces for easier matching)
+          const normalizedInput = time.replace(/\s+/g, "");
+          return (
+            normalizedInput === currentHHMM_AMPM.replace(/\s+/g, "") ||
+            normalizedInput === currentHMM_AMPM ||
+            (currentH_AMPM && normalizedInput === currentH_AMPM) ||
+            (currentHH_AMPM && normalizedInput === currentHH_AMPM)
+          );
+        });
+
+        if (isMatch && !fetchingTrends) {
+          console.log(
+            `[Automation] Time Match Found! Triggering fetch for ${currentHHMM_AMPM} PKT`
+          );
+          handleFetchTrends();
+        }
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [website, fetchingTrends]);
+
+  // Track when auto-mode becomes active
+  useEffect(() => {
+    if (website?.auto_mode && !autoModeStartTime) {
+      setAutoModeStartTime(Date.now());
+      console.log(
+        `[Automation] Auto-mode activated, will start processing in 15 minutes`
+      );
+    } else if (!website?.auto_mode) {
+      setAutoModeStartTime(null);
+    }
+  }, [website?.auto_mode, autoModeStartTime]);
+
+  // Function to start processing queue manually or automatically
+  const startProcessingQueue = useCallback(async () => {
+    if (processingQueue) {
+      console.log("Processing queue already running");
+      return;
+    }
+
+    try {
+      setProcessingQueue(true);
+      console.log(
+        `[Processing] Starting server-side auto-generation for website ${websiteId}`
+      );
+
+      // Get list of items to process and mark them as processing
+      const itemsToProcess = trendingList.filter(
+        (trend) => trend.celebrity_name && !celebrityUrls[trend.celebrity_name]
+      );
+
+      // Mark all items as processing
+      const processingNames = new Set(
+        itemsToProcess.map((t) => t.celebrity_name)
+      );
+      setProcessingItems(processingNames);
+
+      // Process all items in queue (set high limit to process all)
+      const response = await fetch("/api/auto-generate-articles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          websiteId: websiteId,
+          limit: 100, // Process all items in queue
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log(`[Processing] Server-side generation result:`, data);
+
+        if (data.succeeded > 0) {
+          toast.success(`Successfully processed ${data.succeeded} article(s)`);
+          // Clear processing items
+          setProcessingItems(new Set());
+          // Refresh the trending list to show updated URLs and move completed items
+          setTimeout(() => {
+            fetchWebsiteData();
+          }, 5000); // Wait 5 seconds for WordPress post to be created
+        } else if (data.processed === 0) {
+          toast.info("No items in processing queue");
+          setProcessingItems(new Set());
+        } else {
+          toast.warning(
+            `Processed ${data.processed} items, but ${data.failed} failed`
+          );
+          setProcessingItems(new Set());
+        }
+      } else {
+        const errorText = await response.text();
+        console.error(`[Processing] Failed to auto-generate:`, errorText);
+        toast.error("Failed to start processing queue");
+        setProcessingItems(new Set());
+      }
+    } catch (error) {
+      console.error(`[Processing] Error in processing queue:`, error);
+      toast.error("Error starting processing queue: " + error.message);
+      setProcessingItems(new Set());
+    } finally {
+      setProcessingQueue(false);
+    }
+  }, [websiteId, processingQueue, trendingList, celebrityUrls]);
+
+  // Article Automation Logic: Server-side auto-generation
+  useEffect(() => {
+    if (!website?.auto_mode || fetchingTrends || generatingArticle) return;
+
+    const interval = setInterval(async () => {
+      const now = new Date();
+      // Pakistan Time (UTC +5)
+      const pktTime = new Date(now.getTime() + 5 * 60 * 60 * 1000);
+      const hours = pktTime.getUTCHours();
+      const minutes = pktTime.getUTCMinutes();
+      const day = pktTime.getUTCDate();
+
+      // Reset daily count if day changed
+      const lastDay = localStorage.getItem(`auto_day_${websiteId}`);
+      if (lastDay && parseInt(lastDay) !== day) {
+        setDailyAutoArticleCount(0);
+        localStorage.setItem(`auto_day_${websiteId}`, day.toString());
+      } else if (!lastDay) {
+        localStorage.setItem(`auto_day_${websiteId}`, day.toString());
+      }
+
+      // Check if 15 minutes have passed since auto-mode activation
+      if (autoModeStartTime) {
+        const timeSinceActivation =
+          (Date.now() - autoModeStartTime) / 1000 / 60; // minutes
+        if (timeSinceActivation >= 15 && timeSinceActivation < 16) {
+          // Trigger once after 15 minutes
+          if (dailyAutoArticleCount < 3 && !processingQueue) {
+            console.log(
+              `[Automation] 15 minutes passed, starting processing queue`
+            );
+            setAutoModeStartTime(null); // Reset to prevent multiple triggers
+            startProcessingQueue();
+            setDailyAutoArticleCount((prev) => prev + 1);
+            return;
+          }
+        }
+      }
+
+      // Check if we should trigger (at the start of the hour, once per hour)
+      if (minutes === 0 && lastAutoArticleHour !== hours) {
+        // Daily limit: 3
+        if (dailyAutoArticleCount < 3 && !processingQueue) {
+          setLastAutoArticleHour(hours);
+          setDailyAutoArticleCount((prev) => prev + 1);
+          startProcessingQueue();
+        }
+      }
+    }, 1000 * 60); // Check every minute
+
+    return () => clearInterval(interval);
+  }, [
+    website,
+    websiteId,
+    fetchingTrends,
+    generatingArticle,
+    dailyAutoArticleCount,
+    lastAutoArticleHour,
+    processingQueue,
+    autoModeStartTime,
+    startProcessingQueue,
+  ]);
 
   const fetchWebsiteData = async () => {
     try {
@@ -123,53 +309,79 @@ export default function AIDashboardPage() {
 
   const fetchTrendingList = async (
     website,
-    dateFilter = null,
+    currentOffset = 0,
     append = false
   ) => {
     try {
-      // Get today's date in YYYY-MM-DD format
-      const today = new Date().toISOString().split("T")[0];
-      const dateToFetch = dateFilter || today;
-
       // Set loading state for sitemap processing (only for initial load)
       if (!append) {
         setSearchingUrls(true);
         // Clear existing trends to show loading state
         setTrendingList([]);
+        setOffset(0);
       }
 
-      // Fetch saved trends from database for the specific date
-      const response = await fetch(`/api/trends?date=${dateToFetch}`);
+      // Fetch saved trends from database using the same pattern as /trends page:
+      // use the website niche as search_query so results match what /trends shows.
+      const searchQueryParam = website?.niche
+        ? `search_query=${encodeURIComponent(website.niche)}`
+        : "";
+      const websiteIdParam = websiteId ? `&website_id=${websiteId}` : "";
+
+      // Use 50 records limit by default
+      const apiUrl = `/api/trends?${searchQueryParam}${websiteIdParam}&limit=50&offset=${currentOffset}`;
+      console.log("Fetching trends from:", apiUrl);
+
+      const response = await fetch(apiUrl);
       if (response.ok) {
         const data = await response.json();
+        console.log("Trends API response:", {
+          trendsCount: data.trends?.length || 0,
+          total: data.total,
+          limit: data.limit,
+          offset: data.offset,
+        });
 
-        // Update available dates
-        if (data.availableDates) {
-          setAvailableDates(data.availableDates);
+        // Update total records count
+        if (data.total !== undefined) {
+          setTotalRecords(data.total);
         }
 
         // Filter to ensure only items with celebrity names are shown
-        const celebrityTrends = (data.trends || []).filter(
+        const filteredTrends = (data.trends || []).filter(
           (trend) => trend.celebrity_name && trend.celebrity_name.trim() !== ""
         );
 
-        // Mark this date as loaded
-        setLoadedDates((prev) => new Set([...prev, dateToFetch]));
-
         // Search for URLs for new celebrities BEFORE displaying trends
-        if (celebrityTrends.length > 0) {
-          await searchCelebrityUrls(celebrityTrends, append);
+        if (filteredTrends.length > 0) {
+          await searchCelebrityUrls(filteredTrends, append);
 
           // Only set trends list AFTER sitemap search is complete
           if (append) {
-            // Append to existing list
-            setTrendingList((prev) => [...prev, ...celebrityTrends]);
+            // Append to existing list and DEDUPLICATE by celebrity_name to prevent duplicates
+            setTrendingList((prev) => {
+              const combined = [...prev, ...filteredTrends];
+              const seen = new Set();
+              return combined.filter((item) => {
+                const key = item.celebrity_name || item.id;
+                if (!key || seen.has(key)) return false;
+                seen.add(key);
+                return true;
+              });
+            });
           } else {
-            // Replace list (initial load)
-            setTrendingList(celebrityTrends);
+            // Replace list (initial load) - also deduplicate just in case
+            const seen = new Set();
+            const uniqueTrends = filteredTrends.filter((item) => {
+              const key = item.celebrity_name || item.id;
+              if (!key || seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+            setTrendingList(uniqueTrends);
           }
         } else {
-          // No trends found, set empty list
+          // No trends found, set empty list if not appending
           if (!append) {
             setTrendingList([]);
           }
@@ -243,25 +455,15 @@ export default function AIDashboardPage() {
   };
 
   const loadMoreTrends = async () => {
-    if (loadingMore || availableDates.length === 0) return;
+    if (loadingMore || trendingList.length >= totalRecords) return;
 
     try {
       setLoadingMore(true);
+      const nextOffset = offset + 50;
+      setOffset(nextOffset);
 
-      // Find the next date that hasn't been loaded yet
-      const nextDate = availableDates.find((date) => !loadedDates.has(date));
-
-      if (!nextDate) {
-        toast.info("No more trends to load");
-        return;
-      }
-
-      // Fetch trends for the next date
-      await fetchTrendingList(website, nextDate, true);
-
-      toast.success(
-        `Loaded trends from ${new Date(nextDate).toLocaleDateString()}`
-      );
+      // Fetch next 50 trends
+      await fetchTrendingList(website, nextOffset, true);
     } catch (err) {
       console.error("Error loading more trends:", err);
       toast.error("Failed to load more trends");
@@ -271,8 +473,8 @@ export default function AIDashboardPage() {
   };
 
   const handleGenerateArticle = async (celebrityName, silent = false) => {
+    setGeneratingArticle(true);
     if (!silent) {
-      setGeneratingArticle(true);
       setGeneratedArticle(null);
       setArticleDialogOpen(true);
 
@@ -423,6 +625,10 @@ export default function AIDashboardPage() {
           setGeneratedArticle(data.result);
           toast.success("Article generated successfully!");
         }
+
+        // Refresh website data to update celebrityUrls and move item to "Complete" tab
+        await fetchWebsiteData();
+
         return { success: true, data: data.result };
       } else {
         if (!silent) {
@@ -478,9 +684,11 @@ export default function AIDashboardPage() {
       setFetchingTrends(true);
       setError("");
 
-      // Call the trend-search API with the website's niche as the search query
+      // Call the trend-search API with the website's niche as the search query and website_id
       const response = await fetch(
-        `/api/trend-search?q=${encodeURIComponent(website.niche)}`
+        `/api/trend-search?q=${encodeURIComponent(
+          website.niche
+        )}&website_id=${websiteId}`
       );
 
       if (!response.ok) {
@@ -507,173 +715,6 @@ export default function AIDashboardPage() {
       setFetchingTrends(false);
     }
   };
-
-  // Auto mode logic
-  useEffect(() => {
-    if (!autoMode || !websiteId || !website) {
-      return;
-    }
-
-    let timeoutId = null;
-    let isRunning = false;
-
-    const runAutoCycle = async () => {
-      if (isRunning) {
-        console.log("Auto mode cycle already running, skipping...");
-        return;
-      }
-
-      isRunning = true;
-      setAutoModeActive(true);
-
-      try {
-        // Step 1: Immediately fetch trends when auto mode is ON
-        setCurrentAutoStep("Fetching trends...");
-        await handleFetchTrends();
-
-        // Wait for trends to load - use a polling mechanism
-        let attempts = 0;
-        let trendsLoaded = false;
-        while (attempts < 60 && !trendsLoaded) {
-          // Wait up to 2 minutes
-          // Check if trends have been loaded
-          await new Promise((resolve) => setTimeout(resolve, 2000)); // Wait 2 seconds
-
-          // Re-fetch the trending list to get fresh data
-          try {
-            const response = await fetch(
-              `/api/website-stats/${websiteId}/trending`
-            );
-            if (response.ok) {
-              const data = await response.json();
-              if (data.trends && data.trends.length > 0) {
-                trendsLoaded = true;
-                // Update the trending list state
-                setTrendingList(data.trends);
-              }
-            }
-          } catch (err) {
-            console.error("Error checking trends:", err);
-          }
-          attempts++;
-        }
-
-        // Get the current trending list
-        const currentTrends = [...trendingList];
-
-        // If still no trends, try one more fetch
-        if (currentTrends.length === 0) {
-          try {
-            const response = await fetch(
-              `/api/website-stats/${websiteId}/trending`
-            );
-            if (response.ok) {
-              const data = await response.json();
-              if (data.trends && data.trends.length > 0) {
-                setTrendingList(data.trends);
-                currentTrends.push(...data.trends);
-              }
-            }
-          } catch (err) {
-            console.error("Error fetching trends:", err);
-          }
-        }
-
-        if (currentTrends.length === 0) {
-          setCurrentAutoStep("No trends found, skipping article generation");
-          toast.warning("No trends found for auto mode");
-          scheduleNextCycle();
-          return;
-        }
-
-        // Step 2: Process each celebrity one by one with 10-minute intervals
-        setCurrentAutoStep(`Processing ${currentTrends.length} celebrities...`);
-
-        for (let i = 0; i < currentTrends.length; i++) {
-          const trend = currentTrends[i];
-
-          if (!trend.celebrity_name) {
-            continue;
-          }
-
-          // Check if post already exists
-          const postExists = await checkPostExists(trend.celebrity_name);
-          if (postExists) {
-            setCurrentAutoStep(
-              `Skipping ${trend.celebrity_name} (post already exists) - ${
-                i + 1
-              }/${currentTrends.length}`
-            );
-            continue;
-          }
-
-          setCurrentAutoStep(
-            `Generating article for ${trend.celebrity_name} (${i + 1}/${
-              currentTrends.length
-            })...`
-          );
-
-          // Generate article (silent mode for auto)
-          const result = await handleGenerateArticle(
-            trend.celebrity_name,
-            true
-          );
-
-          if (result.success) {
-            toast.success(`Article generated for ${trend.celebrity_name}`);
-          } else {
-            toast.error(
-              `Failed to generate article for ${trend.celebrity_name}`
-            );
-          }
-
-          // Wait 10 minutes before next article (except for the last one)
-          if (i < currentTrends.length - 1) {
-            setCurrentAutoStep("Waiting 10 minutes before next article...");
-            await new Promise((resolve) => setTimeout(resolve, 10 * 60 * 1000));
-          }
-        }
-
-        setCurrentAutoStep("Auto cycle completed");
-        toast.success("Auto mode cycle completed successfully!");
-
-        // Schedule next cycle
-        scheduleNextCycle();
-      } catch (error) {
-        console.error("Error in auto mode cycle:", error);
-        toast.error("Auto mode error: " + error.message);
-        setCurrentAutoStep("Auto mode error occurred");
-        scheduleNextCycle();
-      } finally {
-        isRunning = false;
-        setAutoModeActive(false);
-        setCurrentAutoStep("");
-      }
-    };
-
-    const scheduleNextCycle = () => {
-      // Schedule next cycle based on interval
-      const nextRun = new Date();
-      nextRun.setHours(nextRun.getHours() + autoIntervalHours);
-      setNextAutoRun(nextRun);
-
-      // Set timeout for next cycle
-      const hoursInMs = autoIntervalHours * 60 * 60 * 1000;
-      timeoutId = setTimeout(() => {
-        runAutoCycle();
-      }, hoursInMs);
-    };
-
-    // Start first cycle immediately when auto mode is turned on
-    if (autoMode) {
-      runAutoCycle();
-    }
-
-    // Cleanup
-    return () => {
-      if (timeoutId) clearTimeout(timeoutId);
-    };
-  }, [autoMode, autoIntervalHours, websiteId, website]);
 
   if (status === "loading" || loading) {
     return (
@@ -728,6 +769,14 @@ export default function AIDashboardPage() {
               {website?.website_url}
             </a>
           </p>
+          {website?.auto_mode && (
+            <div className="mt-2 flex items-center gap-2">
+              <span className="flex h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+              <span className="text-xs font-semibold text-green-600 dark:text-green-400 uppercase tracking-wider">
+                Auto Mode Active: {website.fetching_times} (PKT)
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6 mt-6">
@@ -744,72 +793,26 @@ export default function AIDashboardPage() {
               )}
             </div>
             <div className="flex items-center gap-4">
-              {/* Auto Mode Toggle */}
-              <div className="flex items-center gap-3 bg-gray-50 dark:bg-gray-800 p-3 rounded-lg border">
-                <div className="flex items-center gap-2">
-                  <Switch
-                    id="auto-mode"
-                    checked={autoMode}
-                    onCheckedChange={(checked) => {
-                      setAutoMode(checked);
-                      if (typeof window !== "undefined") {
-                        localStorage.setItem(
-                          `autoMode_${websiteId}`,
-                          checked.toString()
-                        );
-                      }
-                      if (!checked) {
-                        setAutoModeActive(false);
-                        setNextAutoRun(null);
-                        setCurrentAutoStep("");
-                      }
-                    }}
-                  />
-                  <Label htmlFor="auto-mode" className="cursor-pointer">
-                    Auto Mode
-                  </Label>
-                </div>
-                {autoMode && (
-                  <div className="flex items-center gap-2">
-                    <Label htmlFor="auto-interval" className="text-sm">
-                      Every
-                    </Label>
-                    <Input
-                      id="auto-interval"
-                      type="number"
-                      min="1"
-                      value={autoIntervalHours}
-                      onChange={(e) => {
-                        const hours = parseInt(e.target.value) || 24;
-                        setAutoIntervalHours(hours);
-                        if (typeof window !== "undefined") {
-                          localStorage.setItem(
-                            `autoInterval_${websiteId}`,
-                            hours.toString()
-                          );
-                        }
-                      }}
-                      className="w-20"
-                    />
-                    <Label htmlFor="auto-interval" className="text-sm">
-                      hours
-                    </Label>
-                  </div>
-                )}
-                {autoMode && nextAutoRun && (
-                  <div className="text-xs text-gray-500 dark:text-gray-400">
-                    Next: {new Date(nextAutoRun).toLocaleString()}
-                  </div>
-                )}
-                {autoModeActive && currentAutoStep && (
-                  <div className="text-xs text-blue-600 dark:text-blue-400 font-semibold">
-                    {currentAutoStep}
-                  </div>
-                )}
-              </div>
+              <Button
+                onClick={startProcessingQueue}
+                disabled={
+                  processingQueue ||
+                  !website?.niche ||
+                  trendingList.length === 0
+                }
+                variant="default"
+                className="flex items-center gap-2"
+              >
+                <Play
+                  className={`h-4 w-4 ${
+                    processingQueue ? "animate-pulse" : ""
+                  }`}
+                />
+                {processingQueue ? "Processing..." : "Start Processing"}
+              </Button>
               <Button
                 onClick={handleFetchTrends}
-                disabled={fetchingTrends || !website?.niche || autoModeActive}
+                disabled={fetchingTrends || !website?.niche}
                 className="flex items-center gap-2"
               >
                 <RefreshCw
@@ -819,183 +822,314 @@ export default function AIDashboardPage() {
               </Button>
             </div>
           </div>
-          {!website?.niche && (
-            <div className="mb-4 p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
-              <p className="text-sm text-yellow-800 dark:text-yellow-200">
-                ⚠️ Please set a niche for this website to fetch trends. Go to{" "}
-                <Link
-                  href={`/add-website?edit=${websiteId}`}
-                  className="underline font-semibold"
-                >
-                  Edit Website
-                </Link>{" "}
-                to add a niche.
-              </p>
-            </div>
-          )}
-          {website?.niche && (
-            <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
-              <p className="text-sm text-blue-800 dark:text-blue-200">
-                <span className="font-semibold">Niche:</span> {website.niche}
-              </p>
-            </div>
-          )}
-          {/* Show loading indicator under heading, hide table while loading */}
-          {searchingUrls &&
-          trendingList.length === 0 ? null : trendingList.length === 0 ? ( // Loading - table is hidden, loading shown under heading
-            // No trends found after loading
-            <p className="text-gray-600 dark:text-gray-400 text-center py-8">
-              No trending items found.
-            </p>
-          ) : (
-            // Show table when loading is complete and trends exist
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Celebrity Name</TableHead>
-                    <TableHead>Trend Value</TableHead>
-                    <TableHead>Date</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {trendingList.map((trend) => (
-                    <TableRow key={trend.id}>
-                      <TableCell className="font-medium">
-                        {trend.celebrity_name ? (
-                          <span className="text-base font-bold text-gray-900 dark:text-white">
-                            {trend.celebrity_name}
-                          </span>
-                        ) : (
-                          <span className="text-gray-400">N/A</span>
-                        )}
-                      </TableCell>
-                      <TableCell>{trend.trend_value || "-"}</TableCell>
-                      <TableCell>
-                        {new Date(trend.created_at).toLocaleDateString(
-                          "en-US",
-                          {
-                            year: "numeric",
-                            month: "short",
-                            day: "numeric",
-                          }
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {trend.celebrity_name ? (
-                          <div className="flex justify-end gap-2">
-                            {!celebrityUrls[trend.celebrity_name] && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={async () => {
-                                  await handleGenerateArticle(
-                                    trend.celebrity_name
-                                  );
-                                }}
-                                disabled={generatingArticle}
-                                className="flex items-center gap-2"
-                              >
-                                <FileEdit className="h-4 w-4" />
-                                {generatingArticle
-                                  ? "Generating..."
-                                  : "Generate Article"}
-                              </Button>
-                            )}
-                            {celebrityUrls[trend.celebrity_name] && (
-                              <>
-                                {(() => {
-                                  const urlData =
-                                    celebrityUrls[trend.celebrity_name];
-                                  const trendDate = new Date(trend.created_at);
-                                  const lastmodDate = urlData.lastmod
-                                    ? new Date(urlData.lastmod)
-                                    : null;
 
-                                  // Check if lastmod is 7+ days older than trend date
-                                  const shouldShowUpdate =
-                                    lastmodDate &&
-                                    trendDate.getTime() -
-                                      lastmodDate.getTime() >=
-                                      7 * 24 * 60 * 60 * 1000;
+          <Tabs defaultValue="processing" className="w-full">
+            <TabsList className="mb-4">
+              <TabsTrigger value="processing">Processing</TabsTrigger>
+              <TabsTrigger value="update">Update</TabsTrigger>
+              <TabsTrigger value="complete">Complete</TabsTrigger>
+            </TabsList>
 
-                                  return (
-                                    <>
-                                      {shouldShowUpdate && (
-                                        <Button
-                                          variant="outline"
-                                          size="sm"
-                                          onClick={() => {
-                                            router.push(
-                                              `/write-blog?keyword=${encodeURIComponent(
-                                                trend.celebrity_name
-                                              )}&website_id=${websiteId}`
-                                            );
-                                          }}
-                                          className="flex items-center gap-2"
-                                        >
-                                          <FileEdit className="h-4 w-4" />
-                                          Update Article
-                                        </Button>
-                                      )}
-                                      <Tooltip>
-                                        <TooltipTrigger asChild>
-                                          <Button
-                                            variant="outline"
-                                            size="sm"
-                                            onClick={() => {
-                                              window.open(
-                                                urlData.url,
-                                                "_blank"
-                                              );
-                                            }}
-                                            className="flex items-center"
-                                          >
-                                            <ExternalLink className="h-4 w-4" />
-                                          </Button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>
-                                          <div>
-                                            <p className="font-semibold">
-                                              View Blog Post
-                                            </p>
-                                            {urlData.lastmod && (
-                                              <p className="text-xs text-gray-400 mt-1">
-                                                Last updated:{" "}
-                                                {new Date(
-                                                  urlData.lastmod
-                                                ).toLocaleDateString("en-US", {
-                                                  year: "numeric",
-                                                  month: "long",
-                                                  day: "numeric",
-                                                })}
-                                              </p>
-                                            )}
-                                          </div>
-                                        </TooltipContent>
-                                      </Tooltip>
-                                    </>
-                                  );
-                                })()}
-                              </>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="flex justify-end">
-                            <span className="text-gray-400 text-sm">-</span>
-                          </div>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-          {trendingList.length > 0 && (
-            <div className="mt-4 flex justify-center">
-              {availableDates.some((date) => !loadedDates.has(date)) ? (
+            <TabsContent value="processing">
+              {!website?.niche && (
+                <div className="mb-4 p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
+                  <p className="text-sm text-yellow-800 dark:text-yellow-200">
+                    ⚠️ Please set a niche for this website to fetch trends. Go
+                    to{" "}
+                    <Link
+                      href={`/add-website?edit=${websiteId}`}
+                      className="underline font-semibold"
+                    >
+                      Edit Website
+                    </Link>{" "}
+                    to add a niche.
+                  </p>
+                </div>
+              )}
+
+              {/* Processing Table */}
+              {(() => {
+                const processingTrends = trendingList.filter(
+                  (trend) =>
+                    trend.celebrity_name && !celebrityUrls[trend.celebrity_name]
+                );
+
+                if (processingTrends.length === 0 && !searchingUrls) {
+                  return (
+                    <p className="text-gray-600 dark:text-gray-400 text-center py-8">
+                      No items in processing queue.
+                    </p>
+                  );
+                }
+
+                if (searchingUrls && processingTrends.length === 0) return null;
+
+                return (
+                  <div className="rounded-md border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Keyword</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Date</TableHead>
+                          <TableHead className="text-right">Action</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {processingTrends.map((trend) => {
+                          const isProcessing =
+                            processingItems.has(trend.celebrity_name) ||
+                            processingQueue;
+                          return (
+                            <TableRow key={trend.id}>
+                              <TableCell className="font-medium">
+                                <span className="text-base font-bold text-gray-900 dark:text-white">
+                                  {trend.celebrity_name}
+                                </span>
+                              </TableCell>
+                              <TableCell>
+                                {isProcessing ? (
+                                  <span className="px-2 py-1 text-xs font-medium bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 rounded flex items-center gap-1">
+                                    <RefreshCw className="h-3 w-3 animate-spin" />
+                                    Processing
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-1 text-xs font-medium bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300 rounded">
+                                    Pending
+                                  </span>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                {new Date(trend.created_at).toLocaleDateString(
+                                  "en-US",
+                                  {
+                                    year: "numeric",
+                                    month: "short",
+                                    day: "numeric",
+                                  }
+                                )}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <div className="flex justify-end">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() =>
+                                      handleGenerateArticle(
+                                        trend.celebrity_name
+                                      )
+                                    }
+                                    disabled={generatingArticle || isProcessing}
+                                    className="flex items-center gap-2"
+                                  >
+                                    <FileEdit className="h-4 w-4" />
+                                    {generatingArticle || isProcessing
+                                      ? "Generating..."
+                                      : "Generate Article"}
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                );
+              })()}
+            </TabsContent>
+
+            <TabsContent value="update">
+              {/* Update Table */}
+              {(() => {
+                const updateTrends = trendingList.filter((trend) => {
+                  if (
+                    !trend.celebrity_name ||
+                    !celebrityUrls[trend.celebrity_name]
+                  )
+                    return false;
+
+                  const urlData = celebrityUrls[trend.celebrity_name];
+                  const trendDate = new Date(trend.created_at);
+                  const lastmodDate = urlData.lastmod
+                    ? new Date(urlData.lastmod)
+                    : null;
+
+                  // Check if lastmod is 7+ days older than trend date
+                  return (
+                    lastmodDate &&
+                    trendDate.getTime() - lastmodDate.getTime() >=
+                      7 * 24 * 60 * 60 * 1000
+                  );
+                });
+
+                if (updateTrends.length === 0) {
+                  return (
+                    <p className="text-gray-600 dark:text-gray-400 text-center py-8">
+                      No articles require updates at this time.
+                    </p>
+                  );
+                }
+
+                return (
+                  <div className="rounded-md border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Keyword</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Date</TableHead>
+                          <TableHead className="text-right">Action</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {updateTrends.map((trend) => (
+                          <TableRow key={trend.id}>
+                            <TableCell className="font-medium">
+                              <span className="text-base font-bold text-gray-900 dark:text-white">
+                                {trend.celebrity_name}
+                              </span>
+                            </TableCell>
+                            <TableCell>
+                              <span className="px-2 py-1 text-xs font-medium bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 rounded">
+                                Needs Update
+                              </span>
+                            </TableCell>
+                            <TableCell>
+                              {new Date(trend.created_at).toLocaleDateString(
+                                "en-US",
+                                {
+                                  year: "numeric",
+                                  month: "short",
+                                  day: "numeric",
+                                }
+                              )}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex justify-end">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => {
+                                    router.push(
+                                      `/write-blog?keyword=${encodeURIComponent(
+                                        trend.celebrity_name
+                                      )}&website_id=${websiteId}`
+                                    );
+                                  }}
+                                  className="flex items-center gap-2"
+                                >
+                                  <FileEdit className="h-4 w-4" />
+                                  Update Article
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                );
+              })()}
+            </TabsContent>
+
+            <TabsContent value="complete">
+              {/* Complete Table */}
+              {(() => {
+                const completeTrends = trendingList.filter((trend) => {
+                  // Item is complete if it has a URL (celebrityUrls entry)
+                  if (
+                    !trend.celebrity_name ||
+                    !celebrityUrls[trend.celebrity_name]
+                  )
+                    return false;
+
+                  const urlData = celebrityUrls[trend.celebrity_name];
+                  const trendDate = new Date(trend.created_at);
+                  const lastmodDate = urlData.lastmod
+                    ? new Date(urlData.lastmod)
+                    : null;
+
+                  // Check if lastmod is LESS than 7 days older than trend date
+                  // If it's 7+ days older, it needs update (show in Update tab instead)
+                  const needsUpdate =
+                    lastmodDate &&
+                    trendDate.getTime() - lastmodDate.getTime() >=
+                      7 * 24 * 60 * 60 * 1000;
+
+                  // Show in Complete tab if it has URL and doesn't need update
+                  return !needsUpdate;
+                });
+
+                if (completeTrends.length === 0) {
+                  return (
+                    <p className="text-gray-600 dark:text-gray-400 text-center py-8">
+                      No completed articles yet.
+                    </p>
+                  );
+                }
+
+                return (
+                  <div className="rounded-md border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Keyword</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Date</TableHead>
+                          <TableHead className="text-right">
+                            Wordpress URL
+                          </TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {completeTrends.map((trend) => (
+                          <TableRow key={trend.id}>
+                            <TableCell className="font-medium">
+                              <span className="text-base font-bold text-gray-900 dark:text-white">
+                                {trend.celebrity_name}
+                              </span>
+                            </TableCell>
+                            <TableCell>
+                              <span className="px-2 py-1 text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300 rounded">
+                                Completed
+                              </span>
+                            </TableCell>
+                            <TableCell>
+                              {new Date(trend.created_at).toLocaleDateString(
+                                "en-US",
+                                {
+                                  year: "numeric",
+                                  month: "short",
+                                  day: "numeric",
+                                }
+                              )}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex justify-end">
+                                <a
+                                  href={celebrityUrls[trend.celebrity_name].url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-2 text-blue-600 hover:underline text-sm"
+                                >
+                                  View Post
+                                  <ExternalLink className="h-3 w-3" />
+                                </a>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                );
+              })()}
+            </TabsContent>
+          </Tabs>
+          {trendingList.length > 25 && (
+            <div className="mt-4 flex justify-end">
+              {trendingList.length < totalRecords ? (
                 <Button
                   onClick={loadMoreTrends}
                   disabled={loadingMore}
@@ -1010,13 +1144,13 @@ export default function AIDashboardPage() {
                   ) : (
                     <>
                       <ChevronDown className="h-4 w-4" />
-                      Load More (Previous Day)
+                      Load More
                     </>
                   )}
                 </Button>
               ) : (
                 <p className="text-sm text-gray-500 dark:text-gray-400">
-                  All trends loaded
+                  Showing {trendingList.length} of {totalRecords} trends
                 </p>
               )}
             </div>
