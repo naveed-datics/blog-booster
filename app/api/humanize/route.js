@@ -318,6 +318,46 @@ function humanizeText(text) {
 }
 
 /**
+ * Remove AI detection patterns from text
+ */
+function removeAIDetection(text) {
+  let result = text;
+  
+  // Common AI-sounding phrases to remove or replace
+  // Overly formal transitions - remove them
+  result = result.replace(/\b(furthermore|moreover|in addition|additionally|consequently|therefore|thus|hence)\b/gi, '');
+  result = result.replace(/\b(it is important to note that|it should be noted that|it is worth mentioning that)\b/gi, '');
+  result = result.replace(/\b(in conclusion|to conclude|to summarize|in summary)\b/gi, '');
+  
+  // Overly structured phrases - simplify
+  result = result.replace(/\bfirstly\b/gi, 'first');
+  result = result.replace(/\bsecondly\b/gi, 'second');
+  result = result.replace(/\bthirdly\b/gi, 'third');
+  result = result.replace(/\bfourthly\b/gi, 'fourth');
+  result = result.replace(/\bfifthly\b/gi, 'fifth');
+  
+  // Generic filler phrases - remove
+  result = result.replace(/\b(as we can see|as one can observe|it becomes clear that)\b/gi, '');
+  result = result.replace(/\b(needless to say|it goes without saying)\b/gi, '');
+  
+  // Overly formal language - simplify
+  result = result.replace(/\butilize\b/gi, 'use');
+  result = result.replace(/\butilization\b/gi, 'use');
+  result = result.replace(/\bcommence\b/gi, 'start');
+  result = result.replace(/\bcommencement\b/gi, 'start');
+  result = result.replace(/\bterminate\b/gi, 'end');
+  result = result.replace(/\btermination\b/gi, 'end');
+  result = result.replace(/\bendeavor\b/gi, 'try');
+  
+  // Remove excessive commas and formal punctuation
+  result = result.replace(/,\s*,/g, ','); // Double commas
+  result = result.replace(/\s+/g, ' '); // Multiple spaces
+  result = result.replace(/\s+([.!?])/g, '$1'); // Space before punctuation
+  
+  return result.trim();
+}
+
+/**
  * Humanize HTML content while preserving tags
  */
 function humanizeHtml(html) {
@@ -382,7 +422,7 @@ export async function POST(request) {
     }
 
     const body = await request.json();
-    const { html, call_ai } = body;
+    const { html } = body;
 
     if (!html || typeof html !== 'string') {
       return NextResponse.json(
@@ -397,59 +437,73 @@ export async function POST(request) {
     console.log('Humanize API: Local humanization completed, output length:', localResult.length);
     console.log('Humanize API: Content changed:', localResult !== html);
 
-    // If AI pass is requested
-    if (call_ai) {
-      try {
-        // Get Azure OpenAI configuration from environment
-        let azureApiKey = process.env.AZURE_OPENAI_API_KEY;
-        let azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
-        let azureDeploymentName = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
-        let azureApiVersion = process.env.AZURE_OPENAI_API_VERSION || '2024-12-01-preview';
+    // Always call AI for humanization (using same pattern as other APIs)
+    try {
+      // Get Azure OpenAI config (same pattern as write-blog route)
+      let azureApiKey = process.env.AZURE_OPENAI_API_KEY;
+      let azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
+      let azureDeploymentName = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
+      let azureApiVersion = process.env.AZURE_OPENAI_API_VERSION || '2024-12-01-preview';
 
-        // Remove quotes if present (common in .env files)
-        if (azureApiKey) azureApiKey = azureApiKey.replace(/^["']|["']$/g, '');
-        if (azureEndpoint) azureEndpoint = azureEndpoint.replace(/^["']|["']$/g, '');
-        if (azureDeploymentName) azureDeploymentName = azureDeploymentName.replace(/^["']|["']$/g, '');
-        if (azureApiVersion) azureApiVersion = azureApiVersion.replace(/^["']|["']$/g, '');
+      // Remove quotes if present (common in .env files)
+      if (azureApiKey) azureApiKey = azureApiKey.replace(/^["']|["']$/g, '');
+      if (azureEndpoint) azureEndpoint = azureEndpoint.replace(/^["']|["']$/g, '');
+      if (azureDeploymentName) azureDeploymentName = azureDeploymentName.replace(/^["']|["']$/g, '');
+      if (azureApiVersion) azureApiVersion = azureApiVersion.replace(/^["']|["']$/g, '');
 
-        if (!azureApiKey || !azureEndpoint || !azureDeploymentName) {
-          return NextResponse.json(
-            { error: 'Azure OpenAI configuration not found. Please check AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT_NAME in .env.local' },
-            { status: 500 }
-          );
-        }
+      // Use Azure OpenAI if configured, otherwise use standard OpenAI
+      const useAzure = azureApiKey && azureEndpoint && azureDeploymentName;
+      const openaiApiKey = process.env.OPENAI_API_KEY;
 
-        // Use Azure OpenAI via fetch
+      if (!useAzure && !openaiApiKey) {
+        console.warn('Azure OpenAI and OpenAI API keys not configured, skipping AI humanization.');
+        return NextResponse.json({
+          humanized_html: localResult,
+          warning: 'AI humanization skipped: No OpenAI configuration found.',
+        });
+      }
+
+      let aiOutput = '';
+
+      if (useAzure) {
+        // Use Azure OpenAI
         const endpoint = azureEndpoint.replace(/\/$/, '');
         const azureUrl = `${endpoint}/openai/deployments/${azureDeploymentName}/chat/completions?api-version=${azureApiVersion}`;
-        
-        console.log('Using Azure OpenAI for humanization:', { 
-          endpoint, 
-          deploymentName: azureDeploymentName, 
-          apiVersion: azureApiVersion
+
+        console.log('Humanize API: Using Azure OpenAI:', {
+          endpoint,
+          deploymentName: azureDeploymentName,
+          apiVersion: azureApiVersion,
         });
-        
+
         const response = await fetch(azureUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'api-key': azureApiKey
+            'api-key': azureApiKey,
           },
           body: JSON.stringify({
             messages: [
               {
                 role: 'system',
-                content: 'You are a content humanizer. Rewrite the text content to make it sound more natural and human-like while preserving ALL HTML tags exactly as they are. Rules: 1) Keep all HTML tags unchanged, 2) Only modify the text content inside tags, 3) Make the writing more conversational and natural, 4) Do not use em dashes (—), 5) NO CONTRACTIONS! Write "I will" instead of "I\'ll", "it is" instead of "it\'s", 6) Keep punctuation simple, 7) Ensure all HTML tags are properly closed. The HTML structure must remain identical - only the text content should be rewritten to sound more human.'
+                content:
+                  'You are a human writer rewriting content to sound natural and conversational. Make it friendly like talking to a friend. ' +
+                  'CRITICAL: Remove all AI detection patterns. Avoid overly formal language, repetitive sentence structures, and generic transitions. ' +
+                  'Write naturally with varied sentence lengths. Use simple, direct language. Avoid phrases like "furthermore", "moreover", "in conclusion", "it is important to note". ' +
+                  'Keep all HTML tags exactly as they are. Do not change HTML structure. Make sure all closing tags are closed properly. ' +
+                  'Do not use long and short dash (—). ' +
+                  'NO CONTRACTIONS! Write "I will" instead of "I\'ll", "it is" instead of "it\'s". ' +
+                  'Keep punctuation simple. Vary your writing style naturally. Write like a real person, not a robot.',
               },
               {
                 role: 'user',
-                content: localResult
-              }
+                content: localResult,
+              },
             ],
             max_tokens: 4500,
             temperature: 0.9,
-            top_p: 0.95
-          })
+            top_p: 0.95,
+          }),
         });
 
         if (!response.ok) {
@@ -467,27 +521,116 @@ export async function POST(request) {
         }
 
         const data = await response.json();
-        let aiOutput = data.choices[0]?.message?.content || localResult;
+        aiOutput = data.choices[0]?.message?.content || localResult;
+      } else {
+        // Use standard OpenAI
+        console.log('Humanize API: Using standard OpenAI');
 
-        // Remove em dashes
-        aiOutput = aiOutput.replace(/—/g, ' ');
-        
-        return NextResponse.json({
-          humanized_html: aiOutput
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${openaiApiKey}`,
+          },
+          body: JSON.stringify({
+            model: 'gpt-4',
+            messages: [
+              {
+                role: 'system',
+                content:
+                  'You are a human writer rewriting content to sound natural and conversational. Make it friendly like talking to a friend. ' +
+                  'CRITICAL: Remove all AI detection patterns. Avoid overly formal language, repetitive sentence structures, and generic transitions. ' +
+                  'Write naturally with varied sentence lengths. Use simple, direct language. Avoid phrases like "furthermore", "moreover", "in conclusion", "it is important to note". ' +
+                  'Keep all HTML tags exactly as they are. Do not change HTML structure. Make sure all closing tags are closed properly. ' +
+                  'Do not use long and short dash (—). ' +
+                  'NO CONTRACTIONS! Write "I will" instead of "I\'ll", "it is" instead of "it\'s". ' +
+                  'Keep punctuation simple. Vary your writing style naturally. Write like a real person, not a robot.',
+              },
+              {
+                role: 'user',
+                content: localResult,
+              },
+            ],
+            max_tokens: 4500,
+            temperature: 0.9,
+            top_p: 0.95,
+          }),
         });
-      } catch (error) {
-        console.error('AI humanization error:', error);
-        // Return local result with error info
-        return NextResponse.json({
-          humanized_html: localResult,
-          ai_error: error.message
-        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(
+            `OpenAI API error: ${errorData.error?.message || response.statusText}`
+          );
+        }
+
+        const data = await response.json();
+        aiOutput = data.choices[0]?.message?.content || localResult;
       }
+
+      // Remove em dashes for safety
+      aiOutput = aiOutput.replace(/—/g, ' ');
+      
+      // Apply post-processing to remove AI detection patterns
+      // Process text nodes only, preserving HTML structure
+      try {
+        const $ = cheerio.load(aiOutput, null, false);
+        
+        // Process all text nodes
+        const processTextNodes = ($element) => {
+          $element.contents().each(function() {
+            const node = this;
+            
+            // Skip script and style tags
+            if (node.type === 'tag' && (node.tagName === 'script' || node.tagName === 'style')) {
+              return;
+            }
+            
+            // Process text nodes
+            if (node.type === 'text') {
+              const originalText = node.data || '';
+              if (originalText && originalText.trim()) {
+                const cleaned = removeAIDetection(originalText);
+                if (cleaned !== originalText && cleaned.trim()) {
+                  node.data = cleaned;
+                }
+              }
+            } 
+            // Recursively process child elements
+            else if (node.type === 'tag') {
+              processTextNodes($(node));
+            }
+          });
+        };
+        
+        // Start processing from root
+        if ($('body').length > 0) {
+          processTextNodes($('body'));
+        } else {
+          processTextNodes($.root());
+        }
+        
+        aiOutput = $.html();
+      } catch (error) {
+        console.error('Error in post-processing AI output:', error);
+        // Continue with original output if post-processing fails
+      }
+
+      return NextResponse.json({
+        humanized_html: aiOutput,
+      });
+    } catch (error) {
+      console.error('AI humanization error:', error);
+      // Return local result with error info
+      return NextResponse.json({
+        humanized_html: localResult,
+        ai_error: error.message,
+      });
     }
 
-    // Return local humanization result
+    // Return local humanization result when AI not requested
     return NextResponse.json({
-      humanized_html: localResult
+      humanized_html: localResult,
     });
   } catch (error) {
     console.error('Error in humanize API:', error);

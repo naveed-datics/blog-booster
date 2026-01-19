@@ -9,7 +9,6 @@ export default function HumanizePage() {
   const [outputText, setOutputText] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [useAI, setUseAI] = useState(false);
 
   const humanizeContent = async () => {
     if (!inputText.trim()) {
@@ -29,7 +28,6 @@ export default function HumanizePage() {
         },
         body: JSON.stringify({
           html: inputText,
-          call_ai: useAI,
         }),
       });
 
@@ -75,24 +73,6 @@ export default function HumanizePage() {
         </p>
 
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
-          <div className="mb-4">
-            <div className="flex items-center gap-2 mb-4">
-              <input
-                type="checkbox"
-                id="use-ai"
-                checked={useAI}
-                onChange={(e) => setUseAI(e.target.checked)}
-                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-              />
-              <label
-                htmlFor="use-ai"
-                className="text-sm font-medium text-gray-700 dark:text-gray-300"
-              >
-                Use AI for additional humanization (requires OpenAI API key)
-              </label>
-            </div>
-          </div>
-
           <div className="space-y-4">
             <div>
               <label

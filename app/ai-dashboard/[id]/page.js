@@ -20,6 +20,7 @@ import {
   FileEdit,
   ExternalLink,
   Play,
+  Trash2,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -56,10 +57,7 @@ export default function AIDashboardPage() {
   const [generatedArticle, setGeneratedArticle] = useState(null);
   const [articleDialogOpen, setArticleDialogOpen] = useState(false);
   const [generationSteps, setGenerationSteps] = useState([]);
-  const [dailyAutoArticleCount, setDailyAutoArticleCount] = useState(0);
-  const [lastAutoArticleHour, setLastAutoArticleHour] = useState(null);
   const [processingQueue, setProcessingQueue] = useState(false);
-  const [autoModeStartTime, setAutoModeStartTime] = useState(null);
   const [processingItems, setProcessingItems] = useState(new Set()); // Track items currently being processed
 
   useEffect(() => {
@@ -125,18 +123,6 @@ export default function AIDashboardPage() {
 
     return () => clearInterval(interval);
   }, [website, fetchingTrends]);
-
-  // Track when auto-mode becomes active
-  useEffect(() => {
-    if (website?.auto_mode && !autoModeStartTime) {
-      setAutoModeStartTime(Date.now());
-      console.log(
-        `[Automation] Auto-mode activated, will start processing in 15 minutes`
-      );
-    } else if (!website?.auto_mode) {
-      setAutoModeStartTime(null);
-    }
-  }, [website?.auto_mode, autoModeStartTime]);
 
   // Function to start processing queue manually or automatically
   const startProcessingQueue = useCallback(async () => {
@@ -208,68 +194,31 @@ export default function AIDashboardPage() {
     }
   }, [websiteId, processingQueue, trendingList, celebrityUrls]);
 
-  // Article Automation Logic: Server-side auto-generation
-  useEffect(() => {
-    if (!website?.auto_mode || fetchingTrends || generatingArticle) return;
+  // Delete a single trend (keyword) from the Processing queue
+  const handleDeleteTrend = async (trendId) => {
+    try {
+      const response = await fetch(`/api/trends/${trendId}`, {
+        method: "DELETE",
+      });
 
-    const interval = setInterval(async () => {
-      const now = new Date();
-      // Pakistan Time (UTC +5)
-      const pktTime = new Date(now.getTime() + 5 * 60 * 60 * 1000);
-      const hours = pktTime.getUTCHours();
-      const minutes = pktTime.getUTCMinutes();
-      const day = pktTime.getUTCDate();
-
-      // Reset daily count if day changed
-      const lastDay = localStorage.getItem(`auto_day_${websiteId}`);
-      if (lastDay && parseInt(lastDay) !== day) {
-        setDailyAutoArticleCount(0);
-        localStorage.setItem(`auto_day_${websiteId}`, day.toString());
-      } else if (!lastDay) {
-        localStorage.setItem(`auto_day_${websiteId}`, day.toString());
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || "Failed to delete trend");
       }
 
-      // Check if 15 minutes have passed since auto-mode activation
-      if (autoModeStartTime) {
-        const timeSinceActivation =
-          (Date.now() - autoModeStartTime) / 1000 / 60; // minutes
-        if (timeSinceActivation >= 15 && timeSinceActivation < 16) {
-          // Trigger once after 15 minutes
-          if (dailyAutoArticleCount < 3 && !processingQueue) {
-            console.log(
-              `[Automation] 15 minutes passed, starting processing queue`
-            );
-            setAutoModeStartTime(null); // Reset to prevent multiple triggers
-            startProcessingQueue();
-            setDailyAutoArticleCount((prev) => prev + 1);
-            return;
-          }
-        }
-      }
+      // Remove deleted trend from local state
+      setTrendingList((prev) => prev.filter((trend) => trend.id !== trendId));
+      toast.success("Keyword removed from processing queue");
+    } catch (error) {
+      console.error("Error deleting trend:", error);
+      toast.error(error.message || "Failed to delete keyword");
+    }
+  };
 
-      // Check if we should trigger (at the start of the hour, once per hour)
-      if (minutes === 0 && lastAutoArticleHour !== hours) {
-        // Daily limit: 3
-        if (dailyAutoArticleCount < 3 && !processingQueue) {
-          setLastAutoArticleHour(hours);
-          setDailyAutoArticleCount((prev) => prev + 1);
-          startProcessingQueue();
-        }
-      }
-    }, 1000 * 60); // Check every minute
-
-    return () => clearInterval(interval);
-  }, [
-    website,
-    websiteId,
-    fetchingTrends,
-    generatingArticle,
-    dailyAutoArticleCount,
-    lastAutoArticleHour,
-    processingQueue,
-    autoModeStartTime,
-    startProcessingQueue,
-  ]);
+  // NOTE: Article auto-generation is now MANUAL ONLY via the \"Start Processing\" button.
+  // Auto mode still controls when trends are fetched (above), but it no longer
+  // triggers automatic article generation. This keeps generation fully under
+  // user control from the Processing tab.
 
   const fetchWebsiteData = async () => {
     try {
@@ -872,7 +821,7 @@ export default function AIDashboardPage() {
                           <TableHead>Keyword</TableHead>
                           <TableHead>Status</TableHead>
                           <TableHead>Date</TableHead>
-                          <TableHead className="text-right">Action</TableHead>
+                          <TableHead className="text-right">Actions</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -910,7 +859,16 @@ export default function AIDashboardPage() {
                                 )}
                               </TableCell>
                               <TableCell className="text-right">
-                                <div className="flex justify-end">
+                                <div className="flex justify-end gap-2">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => handleDeleteTrend(trend.id)}
+                                    className="flex items-center gap-1 text-red-600 border-red-200 hover:bg-red-50 dark:hover:bg-red-900/20"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                    Delete
+                                  </Button>
                                   <Button
                                     variant="outline"
                                     size="sm"

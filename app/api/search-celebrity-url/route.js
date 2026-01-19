@@ -134,7 +134,34 @@ export async function GET(request) {
       `Searching for celebrity: ${celebrityName} in website: ${websiteId}`
     );
 
-    // Fetch sitemap URL from database
+    // STEP 1: Check wordpress_posts table first to avoid duplication
+    try {
+      const existingPost = await query(
+        "SELECT post_url, updated_at FROM wordpress_posts WHERE website_id = $1 AND celebrity_name = $2 ORDER BY created_at DESC LIMIT 1",
+        [parseInt(websiteId), celebrityName.trim()]
+      );
+
+      if (existingPost.rows.length > 0 && existingPost.rows[0].post_url) {
+        console.log(
+          `Found existing WordPress post in database for ${celebrityName}: ${existingPost.rows[0].post_url}`
+        );
+        return NextResponse.json({
+          celebrity_name: celebrityName,
+          url: existingPost.rows[0].post_url,
+          lastmod: existingPost.rows[0].updated_at || null,
+          found: true,
+          source: "database",
+        });
+      }
+    } catch (dbError) {
+      console.error(
+        "Error checking wordpress_posts table for existing post:",
+        dbError
+      );
+      // Continue to sitemap check even if DB check fails
+    }
+
+    // STEP 2: Fallback to sitemap check when no DB record is found
     const websiteResult = await query(
       "SELECT sitemap FROM websites WHERE id = $1",
       [parseInt(websiteId)]

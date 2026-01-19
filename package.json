@@ -3,14 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3003",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3003",
     "lint": "eslint",
     "migrate": "node lib/migrations/run-migration.mjs",
     "migrate:auth": "node lib/migrations/run-auth-migration.mjs",
     "migrate:niche": "node lib/migrations/run-niche-migration.mjs",
-    "migrate:trend-website": "node lib/migrations/run-website-id-migration.mjs"
+    "migrate:trend-website": "node lib/migrations/run-website-id-migration.mjs",
+    "test:gpt": "node test-gpt4.1.mjs"
   },
   "dependencies": {
     "@copilotkit/react-core": "^1.50.1",
