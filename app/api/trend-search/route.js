@@ -448,14 +448,19 @@ function extractNamesFromTrends(formattedTrends) {
 
 export async function GET(request) {
   try {
-    // Check authentication
-    const { auth } = await import('@/lib/auth');
-    const session = await auth();
-    if (!session || !session.user) {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      );
+    // Check if this is an internal cron call (bypass authentication)
+    const isInternalCron = request.headers.get('x-internal-cron') === 'true';
+    
+    // Check authentication (skip for internal cron calls)
+    if (!isInternalCron) {
+      const { auth } = await import('@/lib/auth');
+      const session = await auth();
+      if (!session || !session.user) {
+        return NextResponse.json(
+          { error: 'Unauthorized' },
+          { status: 401 }
+        );
+      }
     }
 
     const { searchParams } = new URL(request.url);
