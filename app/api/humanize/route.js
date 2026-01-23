@@ -339,6 +339,20 @@ function removeAIDetection(text) {
   // Generic filler phrases - remove
   result = result.replace(/\b(as we can see|as one can observe|it becomes clear that)\b/gi, '');
   result = result.replace(/\b(needless to say|it goes without saying)\b/gi, '');
+  result = result.replace(/\b(in many ways|over the years|in general)\b/gi, '');
+  
+  // Stock essay-like phrases - simplify
+  result = result.replace(/\b(has|have) always been\b/gi, '$1 been');
+  result = result.replace(/\bsignificant part of\b/gi, 'big part of');
+  result = result.replace(/\bimportant part of\b/gi, 'big part of');
+  result = result.replace(/\bhelped shape\b/gi, 'influenced');
+  result = result.replace(/\bvalues and work ethic\b/gi, 'approach to life and work');
+  result = result.replace(/\bpassed down through the generations\b/gi, 'passed down in the family');
+  result = result.replace(/\bdeep roots\b/gi, 'long roots');
+  result = result.replace(/\brich cultural heritage\b/gi, 'strong family background');
+  result = result.replace(/\b(pivotal|crucial|critical) role\b/gi, 'big role');
+  result = result.replace(/\bhave guided\b/gi, 'have helped guide');
+  result = result.replace(/\bhas guided\b/gi, 'has helped guide');
   
   // Overly formal language - simplify
   result = result.replace(/\butilize\b/gi, 'use');
@@ -355,6 +369,26 @@ function removeAIDetection(text) {
   result = result.replace(/\s+([.!?])/g, '$1'); // Space before punctuation
   
   return result.trim();
+}
+
+/**
+ * Ensure proper spacing around <b>/<strong> tags to avoid words sticking
+ * e.g. "into<strong>Mark Cuban</strong>" -> "into <strong>Mark Cuban</strong>"
+ */
+function fixBoldSpacing(html) {
+  if (!html || typeof html !== 'string') return html;
+
+  let result = html;
+
+  // Add space BEFORE opening <b>/<strong> when attached to a word character
+  // "...into<strong>Mark" -> "...into <strong>Mark"
+  result = result.replace(/([A-Za-z0-9])<(strong|b)\b/gi, '$1 <$2');
+
+  // Add space AFTER closing </b>/<strong> when directly followed by a word character
+  // "...Mark</strong>life" -> "...Mark</strong> life"
+  result = result.replace(/<\/(strong|b)>([A-Za-z0-9])/gi, '</$1> $2');
+
+  return result;
 }
 
 /**
@@ -400,7 +434,11 @@ function humanizeHtml(html) {
       processNodes($.root());
     }
     
-    const result = $.html();
+    let result = $.html();
+
+    // Final safety pass: ensure spaces around bold tags so words don't stick
+    result = fixBoldSpacing(result);
+
     console.log('Humanize: HTML processing complete. Input length:', html.length, 'Output length:', result.length);
     return result;
   } catch (error) {
@@ -437,114 +475,48 @@ export async function POST(request) {
     console.log('Humanize API: Local humanization completed, output length:', localResult.length);
     console.log('Humanize API: Content changed:', localResult !== html);
 
-    // Always call AI for humanization (using same pattern as other APIs)
+    // Always call AI for humanization using external OpenAI-compatible model (gpt-4.1 via GitHub Models)
     try {
-      // Get Azure OpenAI config (same pattern as write-blog route)
-      let azureApiKey = process.env.AZURE_OPENAI_API_KEY;
-      let azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
-      let azureDeploymentName = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
-      let azureApiVersion = process.env.AZURE_OPENAI_API_VERSION || '2024-12-01-preview';
-
-      // Remove quotes if present (common in .env files)
-      if (azureApiKey) azureApiKey = azureApiKey.replace(/^["']|["']$/g, '');
-      if (azureEndpoint) azureEndpoint = azureEndpoint.replace(/^["']|["']$/g, '');
-      if (azureDeploymentName) azureDeploymentName = azureDeploymentName.replace(/^["']|["']$/g, '');
-      if (azureApiVersion) azureApiVersion = azureApiVersion.replace(/^["']|["']$/g, '');
-
-      // Use Azure OpenAI if configured, otherwise use standard OpenAI
-      const useAzure = azureApiKey && azureEndpoint && azureDeploymentName;
-      const openaiApiKey = process.env.OPENAI_API_KEY;
-
-      if (!useAzure && !openaiApiKey) {
-        console.warn('Azure OpenAI and OpenAI API keys not configured, skipping AI humanization.');
-        return NextResponse.json({
-          humanized_html: localResult,
-          warning: 'AI humanization skipped: No OpenAI configuration found.',
-        });
-      }
-
       let aiOutput = '';
 
-      if (useAzure) {
-        // Use Azure OpenAI
-        const endpoint = azureEndpoint.replace(/\/$/, '');
-        const azureUrl = `${endpoint}/openai/deployments/${azureDeploymentName}/chat/completions?api-version=${azureApiVersion}`;
+      // Prefer dedicated humanizer key + GitHub Models endpoint (gpt-4.1) if configured
+      let humanizeApiKey =
+        process.env.HUMANIZE_OPENAI_API_KEY ;
+      let humanizeBaseUrl =
+        process.env.HUMANIZE_OPENAI_BASE_URL;
 
-        console.log('Humanize API: Using Azure OpenAI:', {
-          endpoint,
-          deploymentName: azureDeploymentName,
-          apiVersion: azureApiVersion,
-        });
-
-        const response = await fetch(azureUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'api-key': azureApiKey,
-          },
-          body: JSON.stringify({
-            messages: [
-              {
-                role: 'system',
-                content:
-                  'You are a human writer rewriting content to sound natural and conversational. Make it friendly like talking to a friend. ' +
-                  'CRITICAL: Remove all AI detection patterns. Avoid overly formal language, repetitive sentence structures, and generic transitions. ' +
-                  'Write naturally with varied sentence lengths. Use simple, direct language. Avoid phrases like "furthermore", "moreover", "in conclusion", "it is important to note". ' +
-                  'Keep all HTML tags exactly as they are. Do not change HTML structure. Make sure all closing tags are closed properly. ' +
-                  'Do not use long and short dash (—). ' +
-                  'NO CONTRACTIONS! Write "I will" instead of "I\'ll", "it is" instead of "it\'s". ' +
-                  'Keep punctuation simple. Vary your writing style naturally. Write like a real person, not a robot.',
-              },
-              {
-                role: 'user',
-                content: localResult,
-              },
-            ],
-            max_tokens: 4500,
-            temperature: 0.9,
-            top_p: 0.95,
-          }),
-        });
-
-        if (!response.ok) {
-          let errorMessage = `Azure OpenAI API error: ${response.status} ${response.statusText}`;
-          try {
-            const errorData = await response.json();
-            errorMessage = `Azure OpenAI API error: ${errorData.error?.message || errorData.error?.code || response.statusText}`;
-            console.error('Azure OpenAI error details:', errorData);
-          } catch (e) {
-            const errorText = await response.text();
-            console.error('Azure OpenAI error response:', errorText);
-            errorMessage = `Azure OpenAI API error: ${response.status} ${response.statusText}. ${errorText.substring(0, 200)}`;
-          }
-          throw new Error(errorMessage);
+      if (humanizeApiKey) {
+        // Clean quotes if present
+        humanizeApiKey = humanizeApiKey.replace(/^["']|["']$/g, '');
+        if (humanizeBaseUrl) {
+          humanizeBaseUrl = humanizeBaseUrl.replace(/^["']|["']$/g, '');
         }
 
-        const data = await response.json();
-        aiOutput = data.choices[0]?.message?.content || localResult;
-      } else {
-        // Use standard OpenAI
-        console.log('Humanize API: Using standard OpenAI');
+        console.log('Humanize Locally: Using Replacement :', localResult);
+        const url = `${humanizeBaseUrl.replace(/\/$/, '')}/v1/chat/completions`;
+        console.log('Humanize API: Using HUMANIZE_OPENAI_API_KEY with base URL:', url);
 
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        const response = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${openaiApiKey}`,
+            Authorization: `Bearer ${humanizeApiKey}`,
           },
           body: JSON.stringify({
-            model: 'gpt-4',
+            model: 'gpt-4.1',
             messages: [
               {
                 role: 'system',
                 content:
-                  'You are a human writer rewriting content to sound natural and conversational. Make it friendly like talking to a friend. ' +
-                  'CRITICAL: Remove all AI detection patterns. Avoid overly formal language, repetitive sentence structures, and generic transitions. ' +
-                  'Write naturally with varied sentence lengths. Use simple, direct language. Avoid phrases like "furthermore", "moreover", "in conclusion", "it is important to note". ' +
-                  'Keep all HTML tags exactly as they are. Do not change HTML structure. Make sure all closing tags are closed properly. ' +
-                  'Do not use long and short dash (—). ' +
-                  'NO CONTRACTIONS! Write "I will" instead of "I\'ll", "it is" instead of "it\'s". ' +
-                  'Keep punctuation simple. Vary your writing style naturally. Write like a real person, not a robot.',
+                  // Original Python system prompt from FastAPI humanizer
+                  "Keep all HTML tags exactly as they are. Dont Change the HTML Keep its same and make sure all clossing tags are clossed properly " +
+                  "Do not use long and short dash (—) " +
+                  "NO CONTRACTIONS! Write 'I will' instead of 'I'll', 'it is' instead of 'it's'. " +
+                  "Keep punctuation simple. Do not change tags. " +
+                  // Extra instructions to reduce AI detection patterns
+                  "Write like a real person telling a story in engaging way, not like a school essay. Use a mix of short and medium sentences, and avoid stiff phrases like 'has always been a significant part', 'helped shape', 'passed down through the generations'. Keep it clear but a bit relaxed. " +
+                  // Tell the model to respect the REPLACEMENTS mapping (prefer simple words)
+                  "Very important: avoid corporate or business jargon. If you are choosing words, always prefer the simpler options similar to these replacements: 'comprehensive guide' -> 'detailed look', 'deep dive' -> 'closer look', 'authoritative' -> 'clear', 'multifaceted' -> 'many-sided', 'robust' -> 'strong', 'leverage' -> 'use', 'holistic' -> 'complete', 'seamless' -> 'smoothly', 'best practices' -> 'methods', 'innovative' -> 'new'. Do not re‑introduce complex phrases that were already simplified.",
               },
               {
                 role: 'user',
@@ -552,20 +524,33 @@ export async function POST(request) {
               },
             ],
             max_tokens: 4500,
-            temperature: 0.9,
+            temperature: 0.1,
             top_p: 0.95,
           }),
         });
 
         if (!response.ok) {
-          const errorData = await response.json();
+          const errorText = await response.text();
           throw new Error(
-            `OpenAI API error: ${errorData.error?.message || response.statusText}`
+            `Humanize model error: ${response.status} ${response.statusText}. ${errorText.substring(
+              0,
+              200,
+            )}`,
           );
         }
 
         const data = await response.json();
-        aiOutput = data.choices[0]?.message?.content || localResult;
+        aiOutput = data.choices?.[0]?.message?.content?.toString() || localResult;
+      } else {
+        // No key configured – skip AI and just return local humanization
+        console.warn(
+          'HUMANIZE_OPENAI_API_KEY / OPENAI_API_KEY not configured, skipping AI humanization.',
+        );
+        return NextResponse.json({
+          humanized_html: localResult,
+          warning:
+            'AI humanization skipped: No HUMANIZE_OPENAI_API_KEY or OPENAI_API_KEY found.',
+        });
       }
 
       // Remove em dashes for safety

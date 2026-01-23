@@ -16,3 +16,4 @@ CREATE INDEX IF NOT EXISTS idx_trends_website_id_created_at ON trends(website_id
 
 
 
+
