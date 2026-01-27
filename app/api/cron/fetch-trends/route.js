@@ -54,9 +54,12 @@ export async function GET(request) {
     const minutes = pktTime.getUTCMinutes();
     const seconds = pktTime.getUTCSeconds();
 
-    // Only trigger at the start of the minute (seconds === 0 or seconds < 5 for tolerance)
-    // This avoids multiple triggers in the same minute
-    if (seconds > 5) {
+    // For Vercel Cron (runs at specific intervals), we don't check seconds
+    // The seconds check is only needed for node-cron which runs every second
+    const isVercelCron = request.headers.get('x-vercel-cron') === '1';
+    
+    if (!isVercelCron && seconds > 30) {
+      // Only skip for non-Vercel cron calls (e.g., node-cron running every minute)
       console.log(`[Cron] Skipping check - not at start of minute (seconds: ${seconds})`);
       return NextResponse.json({
         success: true,
@@ -72,8 +75,15 @@ export async function GET(request) {
     // Multiple time formats for matching
     const currentHHMM_AMPM = `${h12.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')} ${ampm}`;
     const currentHMM_AMPM = `${h12}:${minutes.toString().padStart(2, '0')}${ampm}`;
-    const currentH_AMPM = minutes === 0 ? `${h12}${ampm}` : null;
-    const currentHH_AMPM = minutes === 0 ? `${h12.toString().padStart(2, '0')}${ampm}` : null;
+    const currentH_AMPM = `${h12}${ampm}`;
+    const currentHH_AMPM = `${h12.toString().padStart(2, '0')}${ampm}`;
+    
+    // For Vercel Cron (hourly), also match any time within the current hour
+    // e.g., if cron runs at 6:00 PM and website has "6:33PM", trigger it
+    const currentHourFormats = [
+      `${h12}${ampm}`,           // "6PM"
+      `${h12.toString().padStart(2, '0')}${ampm}`, // "06PM"
+    ];
 
     const triggered = [];
     const skipped = [];
@@ -86,13 +96,32 @@ export async function GET(request) {
 
       // Check if current time matches any scheduled time
       const isMatch = fetchingTimes.some((time) => {
-        const normalizedInput = time.replace(/\s+/g, '');
-        return (
+        const normalizedInput = time.replace(/\s+/g, '').toUpperCase();
+        
+        // Exact minute match (for node-cron running every minute)
+        const exactMatch = (
           normalizedInput === currentHHMM_AMPM.replace(/\s+/g, '') ||
-          normalizedInput === currentHMM_AMPM ||
-          (currentH_AMPM && normalizedInput === currentH_AMPM) ||
-          (currentHH_AMPM && normalizedInput === currentHH_AMPM)
+          normalizedInput === currentHMM_AMPM
         );
+        
+        // Hour-only match (e.g., "6PM", "06PM")
+        const hourOnlyMatch = currentHourFormats.some(fmt => normalizedInput === fmt);
+        
+        // For Vercel Cron (hourly), also match times within current hour
+        // e.g., if time is "6:33PM" and current hour is 6PM, match it
+        let hourRangeMatch = false;
+        if (isVercelCron) {
+          // Extract hour from the scheduled time (e.g., "6:33PM" -> 6, "PM")
+          const timeMatch = normalizedInput.match(/^(\d{1,2}):?(\d{2})?(AM|PM)$/i);
+          if (timeMatch) {
+            const scheduledHour = parseInt(timeMatch[1]);
+            const scheduledAmPm = timeMatch[3].toUpperCase();
+            // Check if the scheduled hour matches current hour
+            hourRangeMatch = (scheduledHour === h12 && scheduledAmPm === ampm);
+          }
+        }
+        
+        return exactMatch || hourOnlyMatch || hourRangeMatch;
       });
 
       if (isMatch) {
