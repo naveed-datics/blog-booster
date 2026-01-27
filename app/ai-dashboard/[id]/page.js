@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter, useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,8 @@ import {
   ExternalLink,
   Play,
   Trash2,
+  Square,
+  CheckSquare,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -59,6 +61,10 @@ export default function AIDashboardPage() {
   const [generationSteps, setGenerationSteps] = useState([]);
   const [processingQueue, setProcessingQueue] = useState(false);
   const [processingItems, setProcessingItems] = useState(new Set()); // Track items currently being processed
+  const [selectedItems, setSelectedItems] = useState(new Set()); // Track selected items for processing
+  
+  // Ref to hold handleGenerateArticle to avoid circular dependency
+  const handleGenerateArticleRef = useRef(null);
 
   useEffect(() => {
     if (status === "unauthenticated") {
@@ -124,67 +130,89 @@ export default function AIDashboardPage() {
     return () => clearInterval(interval);
   }, [website, fetchingTrends]);
 
-  // Function to start processing queue manually or automatically
+  // Function to start processing selected items one by one
   const startProcessingQueue = useCallback(async () => {
     if (processingQueue) {
       console.log("Processing queue already running");
       return;
     }
 
+    if (selectedItems.size === 0) {
+      toast.warning("Please select at least one keyword to process");
+      return;
+    }
+
     try {
       setProcessingQueue(true);
       console.log(
-        `[Processing] Starting server-side auto-generation for website ${websiteId}`
+        `[Processing] Starting processing for ${selectedItems.size} selected items`
       );
 
-      // Get list of items to process and mark them as processing
+      // Get list of selected items to process
       const itemsToProcess = trendingList.filter(
-        (trend) => trend.celebrity_name && !celebrityUrls[trend.celebrity_name]
+        (trend) => 
+          selectedItems.has(trend.id) && 
+          trend.celebrity_name && 
+          !celebrityUrls[trend.celebrity_name]
       );
 
-      // Mark all items as processing
-      const processingNames = new Set(
-        itemsToProcess.map((t) => t.celebrity_name)
-      );
-      setProcessingItems(processingNames);
-
-      // Process all items in queue (set high limit to process all)
-      const response = await fetch("/api/auto-generate-articles", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          websiteId: websiteId,
-          limit: 100, // Process all items in queue
-        }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        console.log(`[Processing] Server-side generation result:`, data);
-
-        if (data.succeeded > 0) {
-          toast.success(`Successfully processed ${data.succeeded} article(s)`);
-          // Clear processing items
-          setProcessingItems(new Set());
-          // Refresh the trending list to show updated URLs and move completed items
-          setTimeout(() => {
-            fetchWebsiteData();
-          }, 5000); // Wait 5 seconds for WordPress post to be created
-        } else if (data.processed === 0) {
-          toast.info("No items in processing queue");
-          setProcessingItems(new Set());
-        } else {
-          toast.warning(
-            `Processed ${data.processed} items, but ${data.failed} failed`
-          );
-          setProcessingItems(new Set());
-        }
-      } else {
-        const errorText = await response.text();
-        console.error(`[Processing] Failed to auto-generate:`, errorText);
-        toast.error("Failed to start processing queue");
-        setProcessingItems(new Set());
+      if (itemsToProcess.length === 0) {
+        toast.info("No valid items to process");
+        setProcessingQueue(false);
+        return;
       }
+
+      // Process items one by one
+      let succeeded = 0;
+      let failed = 0;
+
+      for (const trend of itemsToProcess) {
+        // Mark current item as processing
+        setProcessingItems(new Set([trend.celebrity_name]));
+        
+        try {
+          console.log(`[Processing] Generating article for: ${trend.celebrity_name}`);
+          
+          const result = await handleGenerateArticleRef.current(trend.celebrity_name, true);
+          
+          if (result.success) {
+            succeeded++;
+            // Remove from selected items after successful processing
+            setSelectedItems(prev => {
+              const newSet = new Set(prev);
+              newSet.delete(trend.id);
+              return newSet;
+            });
+          } else {
+            failed++;
+            console.error(`[Processing] Failed for ${trend.celebrity_name}:`, result.error);
+          }
+        } catch (error) {
+          failed++;
+          console.error(`[Processing] Error processing ${trend.celebrity_name}:`, error);
+        }
+
+        // Small delay between items to avoid overwhelming the API
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      // Clear processing items
+      setProcessingItems(new Set());
+
+      // Show result summary
+      if (succeeded > 0 && failed === 0) {
+        toast.success(`Successfully processed ${succeeded} article(s)`);
+      } else if (succeeded > 0 && failed > 0) {
+        toast.warning(`Processed ${succeeded} article(s), ${failed} failed`);
+      } else if (failed > 0) {
+        toast.error(`Failed to process ${failed} article(s)`);
+      }
+
+      // Refresh the trending list
+      setTimeout(() => {
+        fetchWebsiteData();
+      }, 2000);
+
     } catch (error) {
       console.error(`[Processing] Error in processing queue:`, error);
       toast.error("Error starting processing queue: " + error.message);
@@ -192,7 +220,42 @@ export default function AIDashboardPage() {
     } finally {
       setProcessingQueue(false);
     }
-  }, [websiteId, processingQueue, trendingList, celebrityUrls]);
+  }, [websiteId, processingQueue, trendingList, celebrityUrls, selectedItems]);
+
+  // Toggle selection for a single item
+  const toggleItemSelection = (trendId) => {
+    setSelectedItems(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(trendId)) {
+        newSet.delete(trendId);
+      } else {
+        newSet.add(trendId);
+      }
+      return newSet;
+    });
+  };
+
+  // Toggle select all items in processing queue
+  const toggleSelectAll = (processingTrends) => {
+    const allIds = processingTrends.map(t => t.id);
+    const allSelected = allIds.every(id => selectedItems.has(id));
+    
+    if (allSelected) {
+      // Deselect all
+      setSelectedItems(prev => {
+        const newSet = new Set(prev);
+        allIds.forEach(id => newSet.delete(id));
+        return newSet;
+      });
+    } else {
+      // Select all
+      setSelectedItems(prev => {
+        const newSet = new Set(prev);
+        allIds.forEach(id => newSet.add(id));
+        return newSet;
+      });
+    }
+  };
 
   // Delete a single trend (keyword) from the Processing queue
   const handleDeleteTrend = async (trendId) => {
@@ -602,6 +665,9 @@ export default function AIDashboardPage() {
     }
   };
 
+  // Update the ref so startProcessingQueue can use it
+  handleGenerateArticleRef.current = handleGenerateArticle;
+
   // Check if WordPress post exists for a celebrity
   const checkPostExists = async (celebrityName) => {
     try {
@@ -742,12 +808,17 @@ export default function AIDashboardPage() {
               )}
             </div>
             <div className="flex items-center gap-4">
+              {selectedItems.size > 0 && (
+                <span className="text-sm text-blue-600 dark:text-blue-400 font-medium">
+                  {selectedItems.size} selected
+                </span>
+              )}
               <Button
                 onClick={startProcessingQueue}
                 disabled={
                   processingQueue ||
                   !website?.niche ||
-                  trendingList.length === 0
+                  selectedItems.size === 0
                 }
                 variant="default"
                 className="flex items-center gap-2"
@@ -757,7 +828,12 @@ export default function AIDashboardPage() {
                     processingQueue ? "animate-pulse" : ""
                   }`}
                 />
-                {processingQueue ? "Processing..." : "Start Processing"}
+                {processingQueue 
+                  ? "Processing..." 
+                  : selectedItems.size > 0 
+                    ? `Start Processing (${selectedItems.size})`
+                    : "Start Processing"
+                }
               </Button>
               <Button
                 onClick={handleFetchTrends}
@@ -813,11 +889,34 @@ export default function AIDashboardPage() {
 
                 if (searchingUrls && processingTrends.length === 0) return null;
 
+                const allSelected = processingTrends.length > 0 && processingTrends.every(t => selectedItems.has(t.id));
+                const someSelected = processingTrends.some(t => selectedItems.has(t.id));
+
                 return (
                   <div className="rounded-md border">
                     <Table>
                       <TableHeader>
                         <TableRow>
+                          <TableHead className="w-12">
+                            <button
+                              onClick={() => toggleSelectAll(processingTrends)}
+                              className="flex items-center justify-center p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                              title={allSelected ? "Deselect all" : "Select all"}
+                            >
+                              {allSelected ? (
+                                <CheckSquare className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+                              ) : someSelected ? (
+                                <div className="relative">
+                                  <Square className="h-5 w-5 text-gray-400" />
+                                  <div className="absolute inset-0 flex items-center justify-center">
+                                    <div className="w-2 h-2 bg-blue-600 dark:bg-blue-400 rounded-sm" />
+                                  </div>
+                                </div>
+                              ) : (
+                                <Square className="h-5 w-5 text-gray-400" />
+                              )}
+                            </button>
+                          </TableHead>
                           <TableHead>Keyword</TableHead>
                           <TableHead>Status</TableHead>
                           <TableHead>Date</TableHead>
@@ -828,9 +927,26 @@ export default function AIDashboardPage() {
                         {processingTrends.map((trend) => {
                           const isProcessing =
                             processingItems.has(trend.celebrity_name) ||
-                            processingQueue;
+                            (processingQueue && selectedItems.has(trend.id));
+                          const isSelected = selectedItems.has(trend.id);
                           return (
-                            <TableRow key={trend.id}>
+                            <TableRow 
+                              key={trend.id}
+                              className={isSelected ? "bg-blue-50 dark:bg-blue-900/20" : ""}
+                            >
+                              <TableCell className="w-12">
+                                <button
+                                  onClick={() => toggleItemSelection(trend.id)}
+                                  className="flex items-center justify-center p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                                  disabled={isProcessing}
+                                >
+                                  {isSelected ? (
+                                    <CheckSquare className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+                                  ) : (
+                                    <Square className="h-5 w-5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" />
+                                  )}
+                                </button>
+                              </TableCell>
                               <TableCell className="font-medium">
                                 <span className="text-base font-bold text-gray-900 dark:text-white">
                                   {trend.celebrity_name}

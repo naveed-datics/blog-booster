@@ -11,9 +11,9 @@ export async function middleware(request) {
     request.cookies.get('authjs.session-token')?.value ||
     request.cookies.get('__Secure-authjs.session-token')?.value;
 
-  // Allow access to auth routes, API auth endpoints, and static files
+  // Allow access to all API routes (they handle their own auth), and static files
   if (
-    pathname.startsWith('/api/auth') ||
+    pathname.startsWith('/api/') ||
     pathname.startsWith('/_next') ||
     pathname.startsWith('/static')
   ) {
