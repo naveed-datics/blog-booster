@@ -99,10 +99,21 @@ export async function GET(request) {
         console.log(`[Cron] ⏰ Time match found for website ${website.id} (${website.website_name || 'N/A'}) at ${currentHHMM_AMPM} PKT`);
         
         try {
-          // Get base URL from request
+          // Get base URL from request headers or environment
           const host = request.headers.get('host');
-          const protocol = request.headers.get('x-forwarded-proto') || 'http';
-          const baseUrl = host ? `${protocol}://${host}` : process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3003';
+          const protocol = request.headers.get('x-forwarded-proto') || 'https';
+          let baseUrl;
+          if (host) {
+            baseUrl = `${protocol}://${host}`;
+          } else if (process.env.NEXT_PUBLIC_BASE_URL) {
+            baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
+          } else if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+            baseUrl = `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+          } else if (process.env.VERCEL_URL) {
+            baseUrl = `https://${process.env.VERCEL_URL}`;
+          } else {
+            baseUrl = `http://localhost:${process.env.PORT || 3000}`;
+          }
 
           // Call trend-search API internally
           const trendSearchUrl = `${baseUrl}/api/trend-search?q=${encodeURIComponent(website.niche)}&website_id=${website.id}`;

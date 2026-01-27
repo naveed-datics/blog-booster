@@ -3,16 +3,6 @@ import { NextResponse } from 'next/server';
 export async function middleware(request) {
   const { pathname } = request.nextUrl;
 
-  // Allow access to auth routes and API auth endpoints
-  if (
-    pathname.startsWith('/api/auth') ||
-    pathname === '/' ||
-    pathname.startsWith('/_next') ||
-    pathname.startsWith('/static')
-  ) {
-    return NextResponse.next();
-  }
-
   // Check for NextAuth session token cookie
   // NextAuth uses 'next-auth.session-token' or 'authjs.session-token' cookie name
   const sessionToken = 
@@ -20,6 +10,27 @@ export async function middleware(request) {
     request.cookies.get('__Secure-next-auth.session-token')?.value ||
     request.cookies.get('authjs.session-token')?.value ||
     request.cookies.get('__Secure-authjs.session-token')?.value;
+
+  // Allow access to auth routes, API auth endpoints, and static files
+  if (
+    pathname.startsWith('/api/auth') ||
+    pathname.startsWith('/_next') ||
+    pathname.startsWith('/static')
+  ) {
+    return NextResponse.next();
+  }
+
+  // If user is authenticated and on the home page, redirect to dashboard
+  if (pathname === '/' && sessionToken) {
+    const url = request.nextUrl.clone();
+    url.pathname = '/dashboard';
+    return NextResponse.redirect(url);
+  }
+
+  // Allow unauthenticated access to home page (login page)
+  if (pathname === '/') {
+    return NextResponse.next();
+  }
 
   // If no session token and trying to access protected route, redirect to home
   if (!sessionToken) {

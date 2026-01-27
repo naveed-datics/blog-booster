@@ -3,10 +3,11 @@
 import { useState, useEffect } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Plus, Trash2, Edit, Check, X, RefreshCw } from "lucide-react";
+import { Plus, Trash2, Edit, Check, X, RefreshCw, ArrowLeft } from "lucide-react";
 
 export default function AddWebsitePage() {
   const { data: session, status } = useSession();
@@ -43,6 +44,9 @@ export default function AddWebsitePage() {
     fetching_times: "",
   });
 
+  // Check if we're in edit mode from URL
+  const [isEditMode, setIsEditMode] = useState(false);
+
   useEffect(() => {
     if (status === "unauthenticated") {
       router.push("/");
@@ -53,15 +57,18 @@ export default function AddWebsitePage() {
 
   // Handle edit parameter from URL
   useEffect(() => {
-    if (websites.length > 0) {
-      const urlParams = new URLSearchParams(window.location.search);
-      const editId = urlParams.get('edit');
-      if (editId && !editingId) {
+    const urlParams = new URLSearchParams(window.location.search);
+    const editId = urlParams.get('edit');
+    if (editId) {
+      setIsEditMode(true);
+      if (websites.length > 0 && !editingId) {
         const websiteToEdit = websites.find(w => w.id === parseInt(editId));
         if (websiteToEdit) {
           handleEdit(websiteToEdit);
         }
       }
+    } else {
+      setIsEditMode(false);
     }
   }, [websites]);
 
@@ -175,8 +182,16 @@ export default function AddWebsitePage() {
       }
 
       setSuccess("Website updated successfully!");
-      setEditingId(null);
-      fetchWebsites();
+      
+      // If in edit mode (from URL), redirect to dashboard after success
+      if (isEditMode) {
+        setTimeout(() => {
+          router.push('/dashboard');
+        }, 1000);
+      } else {
+        setEditingId(null);
+        fetchWebsites();
+      }
     } catch (err) {
       setError(err.message);
     }
@@ -210,13 +225,30 @@ export default function AddWebsitePage() {
     return null;
   }
 
+  // Get the website being edited
+  const editingWebsite = editingId ? websites.find(w => w.id === editingId) : null;
+
   return (
     <div className="min-h-screen p-8">
       <div className="max-w-7xl mx-auto">
-        <h1 className="text-4xl font-bold mb-6">Manage Websites</h1>
-        <p className="text-gray-600 dark:text-gray-400 mb-8">
-          Add and manage your website connections with API keys.
-        </p>
+        {/* Back button and header */}
+        <div className="mb-6">
+          <Link href="/dashboard">
+            <Button variant="ghost" size="sm" className="mb-4 flex items-center gap-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white">
+              <ArrowLeft className="h-4 w-4" />
+              Back to Dashboard
+            </Button>
+          </Link>
+          <h1 className="text-4xl font-bold mb-2">
+            {isEditMode ? "Edit Website" : "Manage Websites"}
+          </h1>
+          <p className="text-gray-600 dark:text-gray-400">
+            {isEditMode 
+              ? `Update settings for ${editingWebsite?.website_name || editingWebsite?.website_url || 'your website'}`
+              : "Add and manage your website connections with API keys."
+            }
+          </p>
+        </div>
 
         {/* Add Website Form */}
         {!editingId && (
@@ -338,7 +370,8 @@ export default function AddWebsitePage() {
           </div>
         )}
 
-        {/* Websites List */}
+        {/* Websites List - Show only edited website when in edit mode */}
+        {!isEditMode && (
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
           <h2 className="text-2xl font-bold mb-4">Your Websites</h2>
           {websites.length === 0 ? (
@@ -557,6 +590,163 @@ export default function AddWebsitePage() {
             </div>
           )}
         </div>
+        )}
+
+        {/* Edit form for single website when in edit mode */}
+        {isEditMode && editingWebsite && (
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+            <h2 className="text-2xl font-bold mb-4 flex items-center gap-2">
+              <Edit className="h-5 w-5" />
+              Edit: {editingWebsite.website_name || editingWebsite.website_url}
+            </h2>
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <Label>Website URL</Label>
+                  <Input
+                    value={editForm.website_url}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, website_url: e.target.value })
+                    }
+                  />
+                </div>
+                <div>
+                  <Label>Website Name</Label>
+                  <Input
+                    value={editForm.website_name}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, website_name: e.target.value })
+                    }
+                  />
+                </div>
+              </div>
+              <div>
+                <Label>API Key</Label>
+                <Input
+                  type="password"
+                  value={editForm.api_key}
+                  onChange={(e) =>
+                    setEditForm({ ...editForm, api_key: e.target.value })
+                  }
+                />
+              </div>
+              <div>
+                <Label>Description</Label>
+                <Input
+                  value={editForm.description}
+                  onChange={(e) =>
+                    setEditForm({ ...editForm, description: e.target.value })
+                  }
+                />
+              </div>
+              <div>
+                <Label>Niche</Label>
+                <Input
+                  value={editForm.niche}
+                  onChange={(e) =>
+                    setEditForm({ ...editForm, niche: e.target.value })
+                  }
+                  placeholder="e.g., Religion, Technology, Health"
+                />
+              </div>
+              <div>
+                <Label>Sitemap URL</Label>
+                <Input
+                  type="url"
+                  value={editForm.sitemap}
+                  onChange={(e) =>
+                    setEditForm({ ...editForm, sitemap: e.target.value })
+                  }
+                  placeholder="https://example.com/sitemap.xml"
+                />
+              </div>
+              <div>
+                <Label>LLM Prompt Template</Label>
+                <textarea
+                  value={editForm.prompt_template}
+                  onChange={(e) =>
+                    setEditForm({ ...editForm, prompt_template: e.target.value })
+                  }
+                  placeholder="Enter custom prompt template for blog writing. Use ${celebrityName} and ${blogText} as placeholders."
+                  rows={10}
+                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm font-mono"
+                />
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  Leave empty to use default template. Use <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">${`{celebrityName}`}</code> and <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">${`{blogText}`}</code> as placeholders.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="edit-active"
+                  checked={editForm.is_active}
+                  onChange={(e) =>
+                    setEditForm({ ...editForm, is_active: e.target.checked })
+                  }
+                  className="w-4 h-4"
+                />
+                <Label htmlFor="edit-active">Active</Label>
+              </div>
+              <div className="flex flex-col gap-3 p-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="edit-auto-mode"
+                    checked={editForm.auto_mode}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, auto_mode: e.target.checked })
+                    }
+                    className="w-4 h-4"
+                  />
+                  <Label htmlFor="edit-auto-mode" className="cursor-pointer font-semibold">Auto Mode</Label>
+                </div>
+                
+                {editForm.auto_mode && (
+                  <div className="space-y-2 ml-6 animate-in fade-in slide-in-from-left-1 duration-200">
+                    <Label>Fetching Times (e.g., 10AM, 10PM)</Label>
+                    <Input
+                      value={editForm.fetching_times}
+                      onChange={(e) =>
+                        setEditForm({ ...editForm, fetching_times: e.target.value })
+                      }
+                      placeholder="10AM, 10PM"
+                    />
+                  </div>
+                )}
+              </div>
+              
+              {error && (
+                <div className="p-3 bg-red-100 dark:bg-red-900/30 border border-red-400 dark:border-red-700 text-red-700 dark:text-red-400 rounded-lg text-sm">
+                  {error}
+                </div>
+              )}
+              {success && (
+                <div className="p-3 bg-green-100 dark:bg-green-900/30 border border-green-400 dark:border-green-700 text-green-700 dark:text-green-400 rounded-lg text-sm">
+                  {success}
+                </div>
+              )}
+              
+              <div className="flex gap-2 pt-4">
+                <Button
+                  onClick={() => handleUpdate(editingWebsite.id)}
+                  className="flex items-center gap-2"
+                >
+                  <Check className="h-4 w-4" />
+                  Save Changes
+                </Button>
+                <Link href="/dashboard">
+                  <Button
+                    variant="outline"
+                    className="flex items-center gap-2"
+                  >
+                    <X className="h-4 w-4" />
+                    Cancel
+                  </Button>
+                </Link>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

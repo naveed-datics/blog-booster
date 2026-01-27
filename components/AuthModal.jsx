@@ -2,12 +2,14 @@
 
 import { useState } from "react";
 import { signIn } from "next-auth/react";
+import { useRouter } from "next/navigation";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 
 export default function AuthModal({ open, onOpenChange }) {
+  const router = useRouter();
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -48,9 +50,10 @@ export default function AuthModal({ open, onOpenChange }) {
           throw new Error("Registration successful but login failed. Please try logging in.");
         }
 
-        // Close modal on success
+        // Close modal and redirect to dashboard
         onOpenChange(false);
         resetForm();
+        router.push('/dashboard');
       } else {
         // Sign in
         const result = await signIn("credentials", {
@@ -63,9 +66,10 @@ export default function AuthModal({ open, onOpenChange }) {
           throw new Error("Invalid email or password");
         }
 
-        // Close modal on success
+        // Close modal and redirect to dashboard
         onOpenChange(false);
         resetForm();
+        router.push('/dashboard');
       }
     } catch (err) {
       setError(err.message);
