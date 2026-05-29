@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter, useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Table,
   TableBody,
@@ -35,6 +36,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -62,6 +64,12 @@ export default function AIDashboardPage() {
   const [processingQueue, setProcessingQueue] = useState(false);
   const [processingItems, setProcessingItems] = useState(new Set()); // Track items currently being processed
   const [selectedItems, setSelectedItems] = useState(new Set()); // Track selected items for processing
+  const [createArticleDialogOpen, setCreateArticleDialogOpen] = useState(false);
+  const [createArticleKeyword, setCreateArticleKeyword] = useState("");
+  const [createArticleStep, setCreateArticleStep] = useState("input"); // "input" | "confirm"
+  const [pendingCreateArticle, setPendingCreateArticle] = useState(null); // { keyword, url }
+  const [createArticleSearching, setCreateArticleSearching] = useState(false);
+  const [createArticleDeleting, setCreateArticleDeleting] = useState(false);
   
   // Ref to hold handleGenerateArticle to avoid circular dependency
   const handleGenerateArticleRef = useRef(null);
@@ -668,6 +676,90 @@ export default function AIDashboardPage() {
   // Update the ref so startProcessingQueue can use it
   handleGenerateArticleRef.current = handleGenerateArticle;
 
+  const resetCreateArticleDialog = () => {
+    setCreateArticleKeyword("");
+    setCreateArticleStep("input");
+    setPendingCreateArticle(null);
+    setCreateArticleSearching(false);
+    setCreateArticleDeleting(false);
+  };
+
+  const proceedWithCreateArticle = async (keyword) => {
+    setCreateArticleDialogOpen(false);
+    resetCreateArticleDialog();
+    await handleGenerateArticle(keyword);
+  };
+
+  const handleCreateArticleSubmit = async () => {
+    const keyword = createArticleKeyword.trim();
+    if (!keyword) {
+      toast.warning("Please enter a keyword");
+      return;
+    }
+
+    try {
+      setCreateArticleSearching(true);
+      const response = await fetch(
+        `/api/search-celebrity-url?celebrity_name=${encodeURIComponent(
+          keyword
+        )}&website_id=${websiteId}`
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || "Failed to search sitemap");
+      }
+
+      const data = await response.json();
+
+      if (data.found && data.url) {
+        setPendingCreateArticle({ keyword, url: data.url });
+        setCreateArticleStep("confirm");
+        return;
+      }
+
+      await proceedWithCreateArticle(keyword);
+    } catch (error) {
+      console.error("Error searching sitemap:", error);
+      toast.error(error.message || "Failed to search sitemap");
+    } finally {
+      setCreateArticleSearching(false);
+    }
+  };
+
+  const handleConfirmReplaceArticle = async () => {
+    if (!pendingCreateArticle?.keyword) return;
+
+    const { keyword, url } = pendingCreateArticle;
+
+    try {
+      setCreateArticleDeleting(true);
+      const response = await fetch("/api/wp-delete-post", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          website_id: parseInt(websiteId),
+          celebrity_name: keyword,
+          post_url: url,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || errorData.error || "Failed to delete old article");
+      }
+
+      const data = await response.json();
+      toast.success(data.message || "Old article removed");
+      await proceedWithCreateArticle(keyword);
+    } catch (error) {
+      console.error("Error deleting old article:", error);
+      toast.error(error.message || "Failed to delete old article");
+    } finally {
+      setCreateArticleDeleting(false);
+    }
+  };
+
   // Check if WordPress post exists for a celebrity
   const checkPostExists = async (celebrityName) => {
     try {
@@ -834,6 +926,21 @@ export default function AIDashboardPage() {
                     ? `Start Processing (${selectedItems.size})`
                     : "Start Processing"
                 }
+              </Button>
+              <Button
+                onClick={() => setCreateArticleDialogOpen(true)}
+                disabled={
+                  generatingArticle ||
+                  processingQueue ||
+                  fetchingTrends ||
+                  createArticleSearching ||
+                  createArticleDeleting
+                }
+                variant="outline"
+                className="flex items-center gap-2"
+              >
+                <FileEdit className="h-4 w-4" />
+                Create Article
               </Button>
               <Button
                 onClick={handleFetchTrends}
@@ -1231,6 +1338,109 @@ export default function AIDashboardPage() {
           )}
         </div>
       </div>
+
+      {/* Create Article — keyword entry */}
+      <Dialog
+        open={createArticleDialogOpen}
+        onOpenChange={(open) => {
+          setCreateArticleDialogOpen(open);
+          if (!open) resetCreateArticleDialog();
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          {createArticleStep === "input" ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>Create Article</DialogTitle>
+                <DialogDescription>
+                  Enter a keyword. We will search the sitemap first; if an
+                  existing article is found, you can confirm before replacing
+                  it.
+                </DialogDescription>
+              </DialogHeader>
+              <Input
+                placeholder="e.g. Taylor Swift"
+                value={createArticleKeyword}
+                onChange={(e) => setCreateArticleKeyword(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !createArticleSearching) {
+                    e.preventDefault();
+                    handleCreateArticleSubmit();
+                  }
+                }}
+                disabled={createArticleSearching}
+                autoFocus
+              />
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setCreateArticleDialogOpen(false);
+                    resetCreateArticleDialog();
+                  }}
+                  disabled={createArticleSearching}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleCreateArticleSubmit}
+                  disabled={
+                    generatingArticle ||
+                    createArticleSearching ||
+                    createArticleDeleting
+                  }
+                >
+                  {createArticleSearching ? "Searching..." : "Generate"}
+                </Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <>
+              <DialogHeader>
+                <DialogTitle>Article already exists</DialogTitle>
+                <DialogDescription>
+                  Found in sitemap for &quot;{pendingCreateArticle?.keyword}
+                  &quot;:
+                </DialogDescription>
+              </DialogHeader>
+              {pendingCreateArticle?.url && (
+                <a
+                  href={pendingCreateArticle.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-blue-600 dark:text-blue-400 hover:underline break-all"
+                >
+                  {pendingCreateArticle.url}
+                </a>
+              )}
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Delete the old article and featured image, then create a fresh
+                article for this keyword?
+              </p>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setCreateArticleStep("input");
+                    setPendingCreateArticle(null);
+                  }}
+                  disabled={createArticleDeleting}
+                >
+                  No, cancel
+                </Button>
+                <Button
+                  onClick={handleConfirmReplaceArticle}
+                  disabled={createArticleDeleting || generatingArticle}
+                >
+                  {createArticleDeleting
+                    ? "Deleting..."
+                    : "Yes, replace article"}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Article Generation Dialog */}
       <Dialog open={articleDialogOpen} onOpenChange={setArticleDialogOpen}>

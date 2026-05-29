@@ -3,6 +3,7 @@
 import { SessionProvider, useSession } from "next-auth/react";
 import { CopilotKit } from "@copilotkit/react-core";
 import { Toaster } from "@/components/ui/sonner";
+import { ThemeProvider } from "@/components/theme-provider";
 
 function CopilotKitWrapper({ children }) {
   const { data: session, status } = useSession();
@@ -38,7 +39,14 @@ function CopilotKitWrapper({ children }) {
 export function Providers({ children }) {
   return (
     <SessionProvider>
-      <CopilotKitWrapper>{children}</CopilotKitWrapper>
+      <ThemeProvider
+        attribute="class"
+        defaultTheme="system"
+        enableSystem
+        disableTransitionOnChange
+      >
+        <CopilotKitWrapper>{children}</CopilotKitWrapper>
+      </ThemeProvider>
     </SessionProvider>
   );
 }
