@@ -1,99 +1,7 @@
 import { NextResponse } from "next/server";
-import { parseString } from "xml2js";
-import { promisify } from "util";
 import { query } from "@/lib/db";
 import { auth } from "@/lib/auth";
-
-const parseStringAsync = promisify(parseString);
-
-/**
- * Fetch and parse sitemap index to find all post-sitemap URLs
- */
-async function fetchSitemapIndex(sitemapIndexUrl) {
-  try {
-    const headers = {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    };
-
-    const response = await fetch(sitemapIndexUrl, {
-      headers,
-      next: { revalidate: 3600 }, // Cache for 1 hour
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const xmlText = await response.text();
-    const result = await parseStringAsync(xmlText);
-
-    // Extract sitemap URLs from sitemapindex structure
-    const sitemapUrls = [];
-    if (result.sitemapindex && result.sitemapindex.sitemap) {
-      result.sitemapindex.sitemap.forEach((sitemapEntry) => {
-        if (sitemapEntry.loc && sitemapEntry.loc[0]) {
-          const sitemapUrl = sitemapEntry.loc[0];
-          // Only include post-sitemap URLs
-          if (sitemapUrl.includes("post-sitemap")) {
-            sitemapUrls.push(sitemapUrl);
-          }
-        }
-      });
-    }
-
-    return sitemapUrls;
-  } catch (error) {
-    console.error(`Error fetching sitemap index ${sitemapIndexUrl}:`, error);
-    return [];
-  }
-}
-
-/**
- * Fetch URLs from a sitemap XML
- */
-async function fetchSitemapUrls(sitemapUrl) {
-  try {
-    const headers = {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    };
-
-    const response = await fetch(sitemapUrl, {
-      headers,
-      next: { revalidate: 3600 }, // Cache for 1 hour
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const xmlText = await response.text();
-
-    // Parse XML
-    const result = await parseStringAsync(xmlText);
-
-    // Extract URLs and lastmod dates from sitemap structure
-    const urlData = [];
-    if (result.urlset && result.urlset.url) {
-      result.urlset.url.forEach((urlEntry) => {
-        if (urlEntry.loc && urlEntry.loc[0]) {
-          const url = urlEntry.loc[0];
-          const lastmod =
-            urlEntry.lastmod && urlEntry.lastmod[0]
-              ? urlEntry.lastmod[0]
-              : null;
-          urlData.push({ url, lastmod });
-        }
-      });
-    }
-
-    return urlData;
-  } catch (error) {
-    console.error(`Error fetching sitemap ${sitemapUrl}:`, error);
-    return [];
-  }
-}
+import { fetchPostSitemapPageUrls } from "@/lib/sitemap";
 
 /**
  * Search for celebrity URL in sitemaps
@@ -183,27 +91,15 @@ export async function GET(request) {
     console.log(`Fetching sitemap index from: ${sitemapIndexUrl}`);
 
     // Fetch all post-sitemap URLs from the sitemap index
-    const postSitemapUrls = await fetchSitemapIndex(sitemapIndexUrl);
+    const allUrlData = await fetchPostSitemapPageUrls(sitemapIndexUrl);
 
-    if (postSitemapUrls.length === 0) {
+    if (allUrlData.length === 0) {
       return NextResponse.json({
         celebrity_name: celebrityName,
         url: null,
         found: false,
         message: "No post-sitemap URLs found in sitemap index",
       });
-    }
-
-    console.log(
-      `Found ${postSitemapUrls.length} post-sitemap URLs:`,
-      postSitemapUrls
-    );
-
-    // Fetch URLs and lastmod dates from all post-sitemaps and merge them
-    const allUrlData = [];
-    for (const sitemapUrl of postSitemapUrls) {
-      const urlData = await fetchSitemapUrls(sitemapUrl);
-      allUrlData.push(...urlData);
     }
 
     // Create a map of URL to lastmod for quick lookup

@@ -24,6 +24,7 @@ import {
   Trash2,
   Square,
   CheckSquare,
+  Search,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -942,6 +943,12 @@ export default function AIDashboardPage() {
                 <FileEdit className="h-4 w-4" />
                 Create Article
               </Button>
+              <Link href={`/ai-dashboard/${websiteId}/search-console`}>
+                <Button variant="outline" className="flex items-center gap-2">
+                  <Search className="h-4 w-4" />
+                  Google Search Console Data
+                </Button>
+              </Link>
               <Button
                 onClick={handleFetchTrends}
                 disabled={fetchingTrends || !website?.niche}

@@ -7,7 +7,231 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Plus, Trash2, Edit, Check, X, RefreshCw, ArrowLeft } from "lucide-react";
+import { Plus, Trash2, Edit, Check, X, RefreshCw, ArrowLeft, Search, KeyRound } from "lucide-react";
+
+function GoogleOAuthSetupSection() {
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [redirectUri, setRedirectUri] = useState("");
+  const [configured, setConfigured] = useState(false);
+  const [savedClientId, setSavedClientId] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const loadConfig = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch("/api/search-console/oauth-config");
+      const data = await response.json();
+      if (response.ok) {
+        setConfigured(Boolean(data.configured));
+        setSavedClientId(data.clientId || "");
+        setRedirectUri(data.redirectUri || "");
+      }
+    } catch {
+      setError("Failed to load Google API setup");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadConfig();
+  }, []);
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/search-console/oauth-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_id: clientId,
+          client_secret: clientSecret,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to save");
+      }
+      setMessage("Google OAuth credentials saved.");
+      setClientId("");
+      setClientSecret("");
+      setConfigured(true);
+      setSavedClientId(data.clientId || "");
+      setRedirectUri(data.redirectUri || "");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6 mb-8 border border-blue-100 dark:border-blue-900/40">
+      <h2 className="text-2xl font-bold mb-2 flex items-center gap-2">
+        <KeyRound className="h-5 w-5 text-blue-600" />
+        Google API Setup
+      </h2>
+      <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+        One-time setup: create a Google Cloud OAuth app, then paste your Client ID
+        and Client Secret here. After that, each website can connect Search Console
+        with one click — no .env file needed.
+      </p>
+
+      {loading ? (
+        <p className="text-sm text-gray-500">Loading…</p>
+      ) : (
+        <>
+          {configured && (
+            <div className="mb-4 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg text-sm text-green-800 dark:text-green-200">
+              OAuth configured {savedClientId ? `(Client ID: ${savedClientId})` : ""}
+            </div>
+          )}
+
+          <div className="mb-4 p-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg text-xs text-gray-600 dark:text-gray-400 space-y-2">
+            <p className="font-semibold text-gray-800 dark:text-gray-200">Setup steps:</p>
+            <ol className="list-decimal list-inside space-y-1">
+              <li>Go to Google Cloud Console → APIs & Services → Credentials</li>
+              <li>Create OAuth 2.0 Client ID (Web application)</li>
+              <li>Enable the Search Console API for your project</li>
+              <li>Add this Authorized redirect URI:</li>
+            </ol>
+            {redirectUri && (
+              <code className="block mt-2 p-2 bg-white dark:bg-gray-800 border rounded break-all">
+                {redirectUri}
+              </code>
+            )}
+          </div>
+
+          <form onSubmit={handleSave} className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="google_client_id">Google Client ID</Label>
+                <Input
+                  id="google_client_id"
+                  type="text"
+                  value={clientId}
+                  onChange={(e) => setClientId(e.target.value)}
+                  placeholder="123456789.apps.googleusercontent.com"
+                  required={!configured}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="google_client_secret">Google Client Secret</Label>
+                <Input
+                  id="google_client_secret"
+                  type="password"
+                  value={clientSecret}
+                  onChange={(e) => setClientSecret(e.target.value)}
+                  placeholder="GOCSPX-..."
+                  required={!configured}
+                />
+              </div>
+            </div>
+            {error && (
+              <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+            )}
+            {message && (
+              <p className="text-sm text-green-600 dark:text-green-400">{message}</p>
+            )}
+            <Button type="submit" disabled={saving}>
+              {saving ? "Saving…" : configured ? "Update Google Credentials" : "Save Google Credentials"}
+            </Button>
+          </form>
+        </>
+      )}
+    </div>
+  );
+}
+
+function GscConnectSection({ websiteId, onStatusChange }) {
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const loadStatus = async () => {
+    if (!websiteId) return;
+    try {
+      setLoading(true);
+      const response = await fetch(`/api/search-console/${websiteId}/status`);
+      const data = await response.json();
+      setStatus(data);
+      onStatusChange?.(data);
+    } catch {
+      setStatus(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadStatus();
+  }, [websiteId]);
+
+  const handleConnect = () => {
+    window.location.href = `/api/search-console/auth?websiteId=${websiteId}&returnTo=add-website`;
+  };
+
+  if (!websiteId) {
+    return (
+      <p className="text-sm text-gray-500 dark:text-gray-400">
+        Save the website first, then connect Google Search Console.
+      </p>
+    );
+  }
+
+  return (
+    <div className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-900/40 space-y-3">
+      <div className="flex items-center gap-2">
+        <Search className="h-4 w-4 text-blue-600" />
+        <h3 className="font-semibold text-gray-900 dark:text-white">
+          Google Search Console
+        </h3>
+      </div>
+      <p className="text-xs text-gray-500 dark:text-gray-400">
+        Connect your Google account to fetch noindex pages and indexing issues
+        for this site.
+      </p>
+      {loading ? (
+        <p className="text-sm text-gray-500">Checking connection…</p>
+      ) : status?.oauthConfigured === false ? (
+        <p className="text-sm text-yellow-700 dark:text-yellow-300">
+          Complete <strong>Google API Setup</strong> above first (Client ID + Client Secret),
+          then connect Search Console here.
+        </p>
+      ) : status?.connected && status?.propertyMatched ? (
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <span className="text-sm text-green-600 dark:text-green-400 font-medium">
+            Connected — {status.siteUrl}
+          </span>
+          <Button type="button" variant="outline" size="sm" onClick={handleConnect}>
+            Reconnect
+          </Button>
+        </div>
+      ) : status?.connected && !status?.propertyMatched ? (
+        <div className="space-y-2">
+          <p className="text-sm text-yellow-700 dark:text-yellow-300">
+            Google connected, but no matching Search Console property found for
+            this website URL. {status.message}
+          </p>
+          <Button type="button" size="sm" onClick={handleConnect}>
+            Reconnect Google
+          </Button>
+        </div>
+      ) : (
+        <Button type="button" size="sm" onClick={handleConnect}>
+          Connect Google Search Console
+        </Button>
+      )}
+    </div>
+  );
+}
 
 export default function AddWebsitePage() {
   const { data: session, status } = useSession();
@@ -59,6 +283,20 @@ export default function AddWebsitePage() {
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const editId = urlParams.get('edit');
+    const gscConnected = urlParams.get('gscConnected');
+    const gscError = urlParams.get('error');
+    const gscConnect = urlParams.get('gscConnect');
+
+    if (gscConnected === 'true') {
+      setSuccess('Google Search Console connected successfully!');
+    }
+    if (gscConnect === 'true') {
+      setSuccess('Website saved. Connect Google Search Console below to scan noindex pages.');
+    }
+    if (gscError) {
+      setError(`Google Search Console error: ${gscError}`);
+    }
+
     if (editId) {
       setIsEditMode(true);
       if (websites.length > 0 && !editingId) {
@@ -122,6 +360,7 @@ export default function AddWebsitePage() {
       setSuccess("Website added successfully!");
       resetForm();
       fetchWebsites();
+      router.push(`/add-website?edit=${data.website.id}&gscConnect=true`);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -250,6 +489,8 @@ export default function AddWebsitePage() {
           </p>
         </div>
 
+        <GoogleOAuthSetupSection />
+
         {/* Add Website Form */}
         {!editingId && (
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6 mb-8">
@@ -310,6 +551,19 @@ export default function AddWebsitePage() {
                 onChange={(e) => setNiche(e.target.value)}
                 placeholder="e.g., Religion, Technology, Health"
               />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="sitemap">Sitemap URL</Label>
+              <Input
+                id="sitemap"
+                type="url"
+                value={sitemap}
+                onChange={(e) => setSitemap(e.target.value)}
+                placeholder="https://example.com/sitemap.xml"
+              />
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Required for Search Console noindex scanning.
+              </p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="prompt_template">LLM Prompt Template</Label>
@@ -447,6 +701,7 @@ export default function AddWebsitePage() {
                           placeholder="https://example.com/sitemap.xml"
                         />
                       </div>
+                      <GscConnectSection websiteId={website.id} />
                       <div>
                         <Label>LLM Prompt Template</Label>
                         <textarea
@@ -660,6 +915,7 @@ export default function AddWebsitePage() {
                   placeholder="https://example.com/sitemap.xml"
                 />
               </div>
+              <GscConnectSection websiteId={editingWebsite.id} />
               <div>
                 <Label>LLM Prompt Template</Label>
                 <textarea
