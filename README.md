@@ -28,7 +28,7 @@ This project uses [`next/font`](https://nextjs.org/docs/app/building-your-applic
 cp .env.example .env.local
 ```
 
-2. Fill in the values in `.env.local`. At minimum you need `DATABASE_URL`, `NEXTAUTH_SECRET`, and `NEXT_PUBLIC_BASE_URL`. See `.env.example` for all supported keys and comments.
+2. Fill in the values in `.env.local`. At minimum you need `DATABASE_URL`, `AUTH_SECRET` (or `NEXTAUTH_SECRET`), and `NEXT_PUBLIC_BASE_URL`. See `.env.example` for all supported keys and comments.
 
 3. Run database migrations (in order):
 
@@ -54,6 +54,20 @@ npm run dev
 ```
 
 Do not commit `.env.local` — it stays gitignored. Only `.env.example` is tracked in the repo.
+
+### Deploy on Vercel
+
+In your Vercel project **Settings → Environment Variables**, add at minimum:
+
+| Variable | Required | Notes |
+|----------|----------|-------|
+| `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `AUTH_SECRET` | Yes | Generate with `openssl rand -base64 32` |
+| `NEXT_PUBLIC_BASE_URL` | Recommended | Your production URL, e.g. `https://your-app.vercel.app` |
+
+`AUTH_URL` / `NEXTAUTH_URL` are optional on Vercel — the app infers them from `VERCEL_URL` when unset.
+
+Without `AUTH_SECRET`, login will show: *"There is a problem with the server configuration."*
 
 ## Learn More
 
