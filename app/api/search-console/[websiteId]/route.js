@@ -58,7 +58,8 @@ export async function GET(request, { params }) {
     }
 
     const userId = parseInt(session.user.id);
-    const websiteId = parseInt(params.websiteId);
+    const resolvedParams = await params;
+    const websiteId = parseInt(resolvedParams.websiteId);
 
     if (Number.isNaN(websiteId)) {
       return NextResponse.json({ error: "Invalid website ID" }, { status: 400 });
