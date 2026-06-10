@@ -3,16 +3,21 @@ import { auth } from "@/lib/auth";
 import { query } from "@/lib/db";
 import { fetchAllSitemapUrls } from "@/lib/sitemap";
 import {
-  buildInspectionRecord,
   clearInspectionCache,
   fetchSearchAnalyticsPages,
   getAuthenticatedClient,
-  getCachedInspection,
+  getCachedUrlList,
   hasOAuthConfig,
-  inspectUrl,
+  inspectUrlsWithConcurrency,
   resolveSiteUrl,
-  setCachedInspection,
+  setCachedUrlList,
 } from "@/lib/google-search-console";
+
+export const maxDuration = 60;
+
+const DEFAULT_BATCH_LIMIT = 8;
+const MAX_BATCH_LIMIT = 10;
+const INSPECTION_CONCURRENCY = 3;
 
 async function verifyWebsiteAccess(userId, websiteId) {
   const result = await query(
@@ -47,6 +52,21 @@ async function buildUrlList(authClient, siteUrl, sitemapUrl) {
   }
 
   return Array.from(urlSet).sort();
+}
+
+async function resolveUrlList(authClient, website, websiteId, refresh) {
+  if (!refresh) {
+    const cachedList = await getCachedUrlList(websiteId);
+    if (cachedList) {
+      return cachedList;
+    }
+  }
+
+  const siteUrl = await resolveSiteUrl(authClient, website.website_url);
+  const urls = await buildUrlList(authClient, siteUrl, website.sitemap);
+  await setCachedUrlList(websiteId, siteUrl, urls);
+
+  return { siteUrl, urls };
 }
 
 export async function GET(request, { params }) {
@@ -96,8 +116,8 @@ export async function GET(request, { params }) {
     const { searchParams } = new URL(request.url);
     const offset = Math.max(0, parseInt(searchParams.get("offset") || "0", 10));
     const limit = Math.min(
-      50,
-      Math.max(1, parseInt(searchParams.get("limit") || "50", 10))
+      MAX_BATCH_LIMIT,
+      Math.max(1, parseInt(searchParams.get("limit") || String(DEFAULT_BATCH_LIMIT), 10))
     );
     const refresh = searchParams.get("refresh") === "true";
 
@@ -105,11 +125,11 @@ export async function GET(request, { params }) {
       await clearInspectionCache(websiteId);
     }
 
-    const siteUrl = await resolveSiteUrl(authClient, website.website_url);
-    const allUrls = await buildUrlList(
+    const { siteUrl, urls: allUrls } = await resolveUrlList(
       authClient,
-      siteUrl,
-      website.sitemap
+      website,
+      websiteId,
+      refresh
     );
 
     if (allUrls.length === 0) {
@@ -135,37 +155,13 @@ export async function GET(request, { params }) {
     }
 
     const batchUrls = allUrls.slice(offset, offset + limit);
-    const noIndexPages = [];
-    const issues = [];
-
-    for (const url of batchUrls) {
-      let inspectionResult = null;
-
-      if (!refresh) {
-        const cached = await getCachedInspection(websiteId, url);
-        if (cached?.isFresh) {
-          inspectionResult = cached.result;
-        }
-      }
-
-      if (!inspectionResult) {
-        try {
-          inspectionResult = await inspectUrl(authClient, siteUrl, url);
-          await setCachedInspection(websiteId, url, inspectionResult);
-        } catch (inspectError) {
-          console.error(`Inspection failed for ${url}:`, inspectError);
-          inspectionResult = null;
-        }
-      }
-
-      const record = buildInspectionRecord(url, inspectionResult);
-
-      if (record.isNoIndex) {
-        noIndexPages.push(record);
-      } else if (record.isIssue) {
-        issues.push(record);
-      }
-    }
+    const { noIndexPages, issues } = await inspectUrlsWithConcurrency(
+      authClient,
+      websiteId,
+      siteUrl,
+      batchUrls,
+      { concurrency: INSPECTION_CONCURRENCY, refresh }
+    );
 
     const hasMore = offset + limit < allUrls.length;
 

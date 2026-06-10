@@ -17,7 +17,21 @@ import { ArrowLeft, RefreshCw, ExternalLink, Search } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 
-const BATCH_LIMIT = 50;
+const BATCH_LIMIT = 8;
+
+async function parseScanResponse(response) {
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    const text = await response.text();
+    if (/an error occurred|function_invocation_timeout/i.test(text)) {
+      throw new Error(
+        "Scan timed out on the server. Partial results are shown — run Scan again to continue (cached pages are faster)."
+      );
+    }
+    throw new Error(`Unexpected server response: ${text.slice(0, 120)}`);
+  }
+  return response.json();
+}
 
 export default function SearchConsolePage() {
   const { status } = useSession();
@@ -98,7 +112,7 @@ export default function SearchConsolePage() {
           const response = await fetch(
             `/api/search-console/${websiteId}?${query.toString()}`
           );
-          const data = await response.json();
+          const data = await parseScanResponse(response);
 
           if (response.status === 401 && data.needsAuth) {
             setConnected(false);
@@ -139,7 +153,13 @@ export default function SearchConsolePage() {
       } catch (scanError) {
         console.error("Scan error:", scanError);
         setError(scanError.message);
-        toast.error(scanError.message);
+        if (collectedNoIndex.length > 0 || collectedIssues.length > 0) {
+          toast.warning(
+            `${scanError.message} (${collectedNoIndex.length} noindex, ${collectedIssues.length} issues so far)`
+          );
+        } else {
+          toast.error(scanError.message);
+        }
       } finally {
         setScanning(false);
       }
