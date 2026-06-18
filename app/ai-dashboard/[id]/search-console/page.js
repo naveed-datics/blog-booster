@@ -19,6 +19,29 @@ import { toast } from "sonner";
 
 const BATCH_LIMIT = 8;
 
+function formatGscOAuthError(code) {
+  if (!code) return "";
+  if (code === "access_denied") {
+    return "Google access was denied. Grant permission to connect Search Console.";
+  }
+  return `Google OAuth error: ${code.replace(/_/g, " ")}`;
+}
+
+function shouldShowGscReconnect({ oauthError, error, oauthConfigured }) {
+  if (!oauthConfigured) return false;
+  if (oauthError) return true;
+  if (!error) return false;
+  const lower = error.toLowerCase();
+  return (
+    lower.includes("connect google search console") ||
+    lower.includes("not connected") ||
+    lower.includes("invalid_grant") ||
+    lower.includes("access_denied") ||
+    lower.includes("oauth") ||
+    lower.includes("token")
+  );
+}
+
 async function parseScanResponse(response) {
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("application/json")) {
@@ -54,16 +77,17 @@ export default function SearchConsolePage() {
     hasMore: false,
   });
   const [siteUrl, setSiteUrl] = useState("");
+  const oauthError = searchParams.get("error");
 
   useEffect(() => {
     if (searchParams.get("gscConnected") === "true" || searchParams.get("connected") === "true") {
       toast.success("Google Search Console connected");
     }
-    const oauthError = searchParams.get("error");
     if (oauthError) {
-      toast.error(`Google OAuth error: ${oauthError}`);
+      toast.error(formatGscOAuthError(oauthError));
+      setConnected(false);
     }
-  }, [searchParams]);
+  }, [searchParams, oauthError]);
 
   const fetchWebsite = useCallback(async () => {
     const response = await fetch("/api/websites");
@@ -245,7 +269,16 @@ export default function SearchConsolePage() {
           </div>
         )}
 
-        {oauthConfigured && !connected && (
+        {oauthConfigured && oauthError && (
+          <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+            <p className="text-sm text-red-700 dark:text-red-300 mb-3">
+              {formatGscOAuthError(oauthError)}
+            </p>
+            <Button onClick={handleConnect}>Reconnect Google Search Console</Button>
+          </div>
+        )}
+
+        {oauthConfigured && !connected && !oauthError && (
           <div className="mb-6 p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
             <p className="text-sm text-yellow-800 dark:text-yellow-200 mb-3">
               Connect your Google account to inspect indexing status via Search
@@ -258,7 +291,17 @@ export default function SearchConsolePage() {
 
         {error && (
           <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-700 dark:text-red-300 text-sm">
-            {error}
+            <p>{error}</p>
+            {shouldShowGscReconnect({ oauthError, error, oauthConfigured }) && (
+              <Button
+                onClick={handleConnect}
+                variant="outline"
+                size="sm"
+                className="mt-3"
+              >
+                Reconnect Google Search Console
+              </Button>
+            )}
           </div>
         )}
 

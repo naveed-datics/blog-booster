@@ -9,6 +9,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Plus, Trash2, Edit, Check, X, RefreshCw, ArrowLeft, Search, KeyRound } from "lucide-react";
 
+function formatGscOAuthError(code) {
+  if (!code) return "";
+  if (code === "access_denied") {
+    return "Google access was denied. Grant permission to connect Search Console.";
+  }
+  return `Google OAuth error: ${code.replace(/_/g, " ")}`;
+}
+
 function GoogleOAuthSetupSection() {
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
@@ -151,7 +159,7 @@ function GoogleOAuthSetupSection() {
   );
 }
 
-function GscConnectSection({ websiteId, onStatusChange }) {
+function GscConnectSection({ websiteId, onStatusChange, oauthError }) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -198,6 +206,16 @@ function GscConnectSection({ websiteId, onStatusChange }) {
         Connect your Google account to fetch noindex pages and indexing issues
         for this site.
       </p>
+      {oauthError && (
+        <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg space-y-2">
+          <p className="text-sm text-red-700 dark:text-red-300">
+            {formatGscOAuthError(oauthError)}
+          </p>
+          <Button type="button" size="sm" onClick={handleConnect}>
+            Reconnect Google Search Console
+          </Button>
+        </div>
+      )}
       {loading ? (
         <p className="text-sm text-gray-500">Checking connection…</p>
       ) : status?.oauthConfigured === false ? (
@@ -240,6 +258,7 @@ export default function AddWebsitePage() {
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(true);
   const [error, setError] = useState("");
+  const [gscOAuthError, setGscOAuthError] = useState("");
   const [success, setSuccess] = useState("");
   const [editingId, setEditingId] = useState(null);
 
@@ -294,7 +313,8 @@ export default function AddWebsitePage() {
       setSuccess('Website saved. Connect Google Search Console below to scan noindex pages.');
     }
     if (gscError) {
-      setError(`Google Search Console error: ${gscError}`);
+      setGscOAuthError(gscError);
+      setError(`Google Search Console error: ${formatGscOAuthError(gscError)}`);
     }
 
     if (editId) {
@@ -915,7 +935,10 @@ export default function AddWebsitePage() {
                   placeholder="https://example.com/sitemap.xml"
                 />
               </div>
-              <GscConnectSection websiteId={editingWebsite.id} />
+              <GscConnectSection
+                websiteId={editingWebsite.id}
+                oauthError={gscOAuthError}
+              />
               <div>
                 <Label>LLM Prompt Template</Label>
                 <textarea
@@ -973,7 +996,19 @@ export default function AddWebsitePage() {
               
               {error && (
                 <div className="p-3 bg-red-100 dark:bg-red-900/30 border border-red-400 dark:border-red-700 text-red-700 dark:text-red-400 rounded-lg text-sm">
-                  {error}
+                  <p>{error}</p>
+                  {gscOAuthError && editingWebsite?.id && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="mt-3"
+                      onClick={() => {
+                        window.location.href = `/api/search-console/auth?websiteId=${editingWebsite.id}&returnTo=add-website`;
+                      }}
+                    >
+                      Reconnect Google Search Console
+                    </Button>
+                  )}
                 </div>
               )}
               {success && (
