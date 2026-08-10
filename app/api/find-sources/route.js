@@ -39,6 +39,74 @@ const RELIGION_LSI_WORDS = {
   "unitarian": ["unitarian", "universalist", "liberal", "inclusive", "non-creedal", "humanistic", "welcoming", "progressive"]
 };
 
+// Known low-authority "celebrity religion" content-farm domains, identified
+// by hand while researching the same niche this site competes in. Sourcing
+// from these produces a rewrite-of-a-rewrite: weak E-E-A-T, and near-
+// impossible to outrank the site you copied, since you're one step removed
+// from whatever it copied too.
+const BLOCKED_DOMAINS = [
+  'worldsporthub.com',
+  'superstarsculture.com',
+  'wealthypeeps.com',
+  'biobeliefs.com',
+  'faithicons.net',
+  'celebritybeliefs.com',
+  'wikiage.org',
+  'b.wikiage.org',
+  'wikibious.com',
+  'isjewish.com',
+  'thecityceleb.com',
+  'instrumentalfx.co',
+  'leaderbiography.com',
+  'biostory.com.ng',
+  'thesaga.com.ng',
+  'religionstars.com',
+  'crickexpkr.com',
+  'folioz.ca',
+  'essiebookblog.com.ng',
+  'iconpolls.com',
+  'bioglance.in',
+  'g.mlga.ek.gov.ng',
+];
+
+// Reputable, high-authority domains worth preferring when they show up -
+// real journalism and primary sources beat other content-farm rewrites.
+const PREFERRED_DOMAINS = [
+  'wikipedia.org', 'bbc.com', 'bbc.co.uk', 'nytimes.com', 'theguardian.com',
+  'espn.com', 'apnews.com', 'reuters.com', 'people.com', 'cnn.com',
+  'forbes.com', 'variety.com', 'hollywoodreporter.com', 'rollingstone.com',
+  'billboard.com', 'si.com', 'skysports.com', 'goal.com', 'cricbuzz.com',
+  'espncricinfo.com', 'aljazeera.com', 'nbcnews.com', 'washingtonpost.com',
+  'usatoday.com', 'latimes.com', 'time.com', 'vanityfair.com', 'gq.com',
+  'independent.co.uk', 'telegraph.co.uk', 'newsweek.com', 'huffpost.com',
+  'vulture.com', 'eonline.com', 'imdb.com', 'britannica.com',
+];
+
+function getDomain(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function isBlockedDomain(domain) {
+  if (BLOCKED_DOMAINS.some((d) => domain === d || domain.endsWith(`.${d}`))) {
+    return true;
+  }
+  // Any domain with "religion" literally in it is almost certainly a direct
+  // competitor in this exact content-farm genre, not a primary source -
+  // legitimate news/encyclopedic sources essentially never do this.
+  if (domain.includes('religion')) {
+    return true;
+  }
+  return false;
+}
+
+function isPreferredDomain(domain) {
+  return PREFERRED_DOMAINS.some((d) => domain === d || domain.endsWith(`.${d}`));
+}
+
 // Extract religion context from query
 function extractReligionContext(query) {
   const queryLower = query.toLowerCase();
@@ -189,8 +257,6 @@ export async function GET(request) {
 
     // Initialize result URLs
     let wikiUrl = '';
-    let titleMatchUrl = '';
-    let descriptionMatchUrl = '';
 
     const queryLower = query.toLowerCase();
     const searchTerms = queryLower.split(' ').filter(term => term.length > 2);
@@ -211,6 +277,15 @@ export async function GET(request) {
       // Check if this is Wikipedia
       const isWikipedia = displayedLinkLower.includes('wikipedia') || link.toLowerCase().includes('wikipedia.org');
 
+      const domain = getDomain(link);
+
+      // Skip known content-farm domains and anything else in this exact
+      // "X religion" genre entirely - never use them as a source, no
+      // matter how well they match keywords.
+      if (!isWikipedia && domain && isBlockedDomain(domain)) {
+        continue;
+      }
+
       // Calculate title match score
       const titleMatch = checkLsiMatch(title, searchTerms, lsiWords);
       const titleScore = titleMatch.match ? titleMatch.exact * 3 + titleMatch.lsi : 0;
@@ -219,168 +294,80 @@ export async function GET(request) {
       const descMatch = checkLsiMatch(snippet, searchTerms, lsiWords);
       const descScore = descMatch.match ? descMatch.exact * 3 + descMatch.lsi : 0;
 
+      // Prefer known reputable outlets over unknown/low-authority ones when
+      // relevance is otherwise comparable.
+      const authorityBoost = isPreferredDomain(domain) ? 5 : 0;
+
       // Add to candidates list
       allCandidates.push({
         url: link,
         title: title,
         snippet: snippet,
+        domain: domain,
         isWikipedia: isWikipedia,
+        isPreferred: isPreferredDomain(domain),
         titleScore: titleScore,
         descScore: descScore,
-        totalScore: titleScore + descScore
+        totalScore: titleScore + descScore + authorityBoost
       });
     }
 
     // Sort candidates by total score (highest first)
     allCandidates.sort((a, b) => b.totalScore - a.totalScore);
 
-    // First pass: Find Wikipedia URL (prioritize Wikipedia)
+    const MAX_SOURCES = 6; // Wikipedia + up to 5 more
+
+    // Pick Wikipedia first if present (still a useful baseline source).
+    const wikiCandidate = allCandidates.find((c) => c.isWikipedia);
+    if (wikiCandidate) {
+      wikiUrl = wikiCandidate.url;
+      usedUrls.add(wikiCandidate.url);
+    }
+
+    // Then fill remaining slots with the highest-scoring non-Wikipedia
+    // candidates, preferring one URL per domain so sources are genuinely
+    // diverse (multiple pages from the same site don't add independent
+    // corroboration - they're the same voice twice).
+    const seenDomains = new Set(wikiCandidate ? ['wikipedia.org'] : []);
+    const selectedUrls = [];
+
     for (const candidate of allCandidates) {
-      if (candidate.isWikipedia && !usedUrls.has(candidate.url)) {
-        wikiUrl = candidate.url;
+      if (selectedUrls.length >= MAX_SOURCES - (wikiUrl ? 1 : 0)) break;
+      if (usedUrls.has(candidate.url) || candidate.isWikipedia) continue;
+      if (candidate.domain && seenDomains.has(candidate.domain)) continue;
+      if (candidate.totalScore <= 0) continue;
+
+      selectedUrls.push(candidate.url);
+      usedUrls.add(candidate.url);
+      if (candidate.domain) seenDomains.add(candidate.domain);
+    }
+
+    // If domain-diversity filtering left us with too few sources (small
+    // result set), relax the one-per-domain rule as a fallback rather than
+    // publishing on just 1-2 sources.
+    if (selectedUrls.length < 2) {
+      for (const candidate of allCandidates) {
+        if (selectedUrls.length >= MAX_SOURCES - (wikiUrl ? 1 : 0)) break;
+        if (usedUrls.has(candidate.url) || candidate.isWikipedia) continue;
+        selectedUrls.push(candidate.url);
         usedUrls.add(candidate.url);
-        break;
       }
     }
 
-    // Second pass: Find best title match (excluding Wikipedia and used URLs)
-    for (const candidate of allCandidates) {
-      // Skip if already used, is Wikipedia, or has no title score
-      if (usedUrls.has(candidate.url) || candidate.isWikipedia || candidate.titleScore === 0) {
-        continue;
-      }
-      
-      titleMatchUrl = candidate.url;
-      usedUrls.add(candidate.url);
-      break;
-    }
+    const allSources = [wikiUrl, ...selectedUrls].filter(Boolean);
+    const preferredCount = allCandidates.filter(
+      (c) => allSources.includes(c.url) && c.isPreferred
+    ).length;
 
-    // Third pass: Find best description match (excluding Wikipedia, title match, and used URLs)
-    for (const candidate of allCandidates) {
-      // Skip if already used, is Wikipedia, or has no description score
-      if (usedUrls.has(candidate.url) || candidate.isWikipedia || candidate.descScore === 0) {
-        continue;
-      }
-      
-      descriptionMatchUrl = candidate.url;
-      usedUrls.add(candidate.url);
-      break;
-    }
-
-    // Fallback: if still missing URLs, use basic matching from remaining candidates
-    // (excluding Wikipedia and already used URLs)
-    if (!titleMatchUrl || !descriptionMatchUrl) {
-      for (const candidate of allCandidates) {
-        if (usedUrls.has(candidate.url) || candidate.isWikipedia) {
-          continue;
-        }
-
-        const titleLower = candidate.title.toLowerCase();
-        const snippetLower = candidate.snippet.toLowerCase();
-
-        // Basic fallback for title (must be unique)
-        if (!titleMatchUrl && searchTerms.some(term => titleLower.includes(term))) {
-          titleMatchUrl = candidate.url;
-          usedUrls.add(candidate.url);
-          continue;
-        }
-
-        // Basic fallback for description (must be unique and different from title)
-        if (!descriptionMatchUrl && 
-            candidate.url !== titleMatchUrl && 
-            searchTerms.some(term => snippetLower.includes(term))) {
-          descriptionMatchUrl = candidate.url;
-          usedUrls.add(candidate.url);
-          continue;
-        }
-
-        if (titleMatchUrl && descriptionMatchUrl) {
-          break;
-        }
-      }
-    }
-
-    // Final fallback: use any remaining unique URLs if still empty
-    // Ensure all three are unique
-    if (!wikiUrl || !titleMatchUrl || !descriptionMatchUrl) {
-      for (const candidate of allCandidates) {
-        if (usedUrls.has(candidate.url)) {
-          continue;
-        }
-
-        // Assign to first empty slot, ensuring uniqueness
-        if (!wikiUrl && candidate.isWikipedia) {
-          wikiUrl = candidate.url;
-          usedUrls.add(candidate.url);
-        } else if (!titleMatchUrl && !candidate.isWikipedia && candidate.url !== wikiUrl) {
-          titleMatchUrl = candidate.url;
-          usedUrls.add(candidate.url);
-        } else if (!descriptionMatchUrl && 
-                   !candidate.isWikipedia && 
-                   candidate.url !== wikiUrl && 
-                   candidate.url !== titleMatchUrl) {
-          descriptionMatchUrl = candidate.url;
-          usedUrls.add(candidate.url);
-        }
-
-        // Stop if all three are filled
-        if (wikiUrl && titleMatchUrl && descriptionMatchUrl) {
-          break;
-        }
-      }
-    }
-
-    // Final validation: Ensure all URLs are unique
-    const allUrls = [wikiUrl, titleMatchUrl, descriptionMatchUrl].filter(Boolean);
-    const uniqueUrls = [...new Set(allUrls)];
-    
-    // If we have duplicates, reassign to ensure uniqueness
-    if (allUrls.length !== uniqueUrls.length) {
-      // Reset and reassign with strict uniqueness
-      wikiUrl = '';
-      titleMatchUrl = '';
-      descriptionMatchUrl = '';
-      usedUrls.clear();
-      
-      // Reassign with strict uniqueness checks
-      for (const candidate of allCandidates) {
-        if (usedUrls.has(candidate.url)) {
-          continue;
-        }
-
-        if (!wikiUrl && candidate.isWikipedia) {
-          wikiUrl = candidate.url;
-          usedUrls.add(candidate.url);
-        } else if (!titleMatchUrl && 
-                   !candidate.isWikipedia && 
-                   candidate.url !== wikiUrl) {
-          titleMatchUrl = candidate.url;
-          usedUrls.add(candidate.url);
-        } else if (!descriptionMatchUrl && 
-                   !candidate.isWikipedia && 
-                   candidate.url !== wikiUrl && 
-                   candidate.url !== titleMatchUrl) {
-          descriptionMatchUrl = candidate.url;
-          usedUrls.add(candidate.url);
-        }
-
-        if (wikiUrl && titleMatchUrl && descriptionMatchUrl) {
-          break;
-        }
-      }
-    }
-
-    console.log(`Find sources result for "${query}":`, {
-      wikipedia: wikiUrl,
-      religionURL: titleMatchUrl,
-      religion: descriptionMatchUrl
-    });
+    console.log(`Find sources result for "${query}": ${allSources.length} sources (${preferredCount} from preferred/reputable domains)`, allSources);
 
     return NextResponse.json({
       keyword: query,
       wikipedia: wikiUrl,
-      religionURL: titleMatchUrl,
-      religion: descriptionMatchUrl
+      sources: allSources,
+      // Kept for backward compatibility with any older consumers.
+      religionURL: selectedUrls[0] || '',
+      religion: selectedUrls[1] || ''
     });
   } catch (error) {
     console.error('Error in find-sources API:', error);

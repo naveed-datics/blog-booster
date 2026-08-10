@@ -142,12 +142,11 @@ export async function POST(request) {
       const sourcesData = await findSourcesResponse.json();
       steps.push({ step: "Found sources", status: "completed", data: sourcesData });
 
-      // Extract URLs from sources
-      const urls = [
-        sourcesData.wikipedia,
-        sourcesData.religionURL,
-        sourcesData.religion,
-      ].filter(Boolean);
+      // Extract URLs from sources (find-sources now returns up to 6
+      // quality-filtered, domain-diverse sources instead of just 3)
+      const urls = Array.isArray(sourcesData.sources) && sourcesData.sources.length > 0
+        ? sourcesData.sources.filter(Boolean)
+        : [sourcesData.wikipedia, sourcesData.religionURL, sourcesData.religion].filter(Boolean);
 
       // Step 3: Fetch Content from all URLs
       if (urls.length > 0) {

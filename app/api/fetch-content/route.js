@@ -22,10 +22,10 @@ export async function POST(request) {
       );
     }
 
-    // Limit to maximum 3 URLs
-    if (urls.length > 3) {
+    // Limit to maximum 6 URLs (matches find-sources' MAX_SOURCES)
+    if (urls.length > 6) {
       return NextResponse.json(
-        { error: 'Maximum 3 URLs allowed' },
+        { error: 'Maximum 6 URLs allowed' },
         { status: 400 }
       );
     }
