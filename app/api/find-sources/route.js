@@ -177,77 +177,82 @@ export async function GET(request) {
       );
     }
 
-    const apiKey = process.env.SERPAPI_KEY;
-    
+    const apiKey = process.env.TAVILY_API_KEY;
+
     if (!apiKey) {
       return NextResponse.json(
-        { error: 'SERPAPI_KEY not found in environment variables' },
+        { error: 'TAVILY_API_KEY not found in environment variables' },
         { status: 500 }
       );
     }
 
-    // Build parameters for SerpAPI
-    const params = new URLSearchParams({
-      engine: 'google',
-      q: query,
-      api_key: apiKey,
-      num: '20' // Increased for better matching with LSI
+    // Ask Tavily to exclude known content-farm domains server-side too
+    // (belt-and-suspenders with the isBlockedDomain() check applied below,
+    // which also catches the generic "religion in domain name" pattern
+    // Tavily's exact-match exclude_domains can't express).
+    const response = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: apiKey,
+        query: query,
+        search_depth: 'basic',
+        max_results: 10,
+        exclude_domains: BLOCKED_DOMAINS,
+        include_raw_content: false,
+      }),
     });
-
-    // Make request to SerpAPI
-    const baseUrl = 'https://serpapi.com/search.json';
-    const response = await fetch(`${baseUrl}?${params.toString()}`);
 
     if (!response.ok) {
       let errorDetails = '';
       let errorMessage = '';
       try {
         const errorData = await response.json();
-        errorDetails = errorData.error || errorData.message || JSON.stringify(errorData);
-        errorMessage = errorData.error || errorData.message || errorDetails;
+        errorDetails = errorData.error || errorData.detail || JSON.stringify(errorData);
+        errorMessage = errorData.error || errorData.detail || errorDetails;
       } catch (e) {
         errorDetails = await response.text();
         errorMessage = errorDetails;
       }
-      
-      console.error('SerpAPI error response:', {
+
+      console.error('Tavily error response:', {
         status: response.status,
         statusText: response.statusText,
         details: errorDetails
       });
 
       return NextResponse.json(
-        { 
-          error: 'SerpAPI Error', 
+        {
+          error: 'Tavily API Error',
           message: errorMessage || `API returned ${response.status} ${response.statusText}`,
-          details: errorDetails
+          details: errorDetails,
+          // Flags quota/rate-limit style failures distinctly so callers
+          // (auto-generate-articles) can stop the batch early instead of
+          // retrying every remaining item against a dead quota.
+          isQuotaError: response.status === 429 || response.status === 432,
         },
         { status: response.status }
       );
     }
 
     const data = await response.json();
+    const tavilyResults = data.results || [];
 
-    // Check for error in response
-    if (data.error) {
-      return NextResponse.json(
-        { 
-          error: 'API Error', 
-          message: data.error,
-          details: data.error
-        },
-        { status: 400 }
-      );
-    }
-
-    const organicResults = data.organic_results || [];
-
-    if (!organicResults || organicResults.length === 0) {
+    if (tavilyResults.length === 0) {
       return NextResponse.json(
         { error: 'No search results found', keyword: query },
         { status: 404 }
       );
     }
+
+    // Map Tavily's result shape onto the {title, snippet, link, displayed_link}
+    // shape the existing scoring/selection logic below already expects.
+    const organicResults = tavilyResults.map((r) => ({
+      title: r.title || '',
+      snippet: r.content || '',
+      link: r.url || '',
+      displayed_link: r.url || '',
+    }));
 
     // Extract religion context from query
     const { detectedReligions, lsiWords } = extractReligionContext(query);

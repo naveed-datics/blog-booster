@@ -2,6 +2,26 @@ import { NextResponse } from "next/server";
 import { query } from "@/lib/db";
 import { isAuthorized } from "@/lib/cronAuth";
 
+// Detects quota/rate-limit style failures (Tavily, SerpAPI, Azure OpenAI,
+// etc.) from an error message or step list, so the batch can stop early
+// instead of burning through every remaining item against a dead quota -
+// exactly what happened before this guard existed (10/10 failures in one
+// run, all against the same exhausted SerpAPI account).
+function looksLikeQuotaError(text) {
+  if (!text) return false;
+  const t = String(text).toLowerCase();
+  return (
+    t.includes('isquotaerror') ||
+    t.includes('429') ||
+    t.includes(' 432') ||
+    t.includes('out of searches') ||
+    t.includes('insufficient credits') ||
+    t.includes('not enough credits') ||
+    t.includes('rate limit') ||
+    t.includes('quota')
+  );
+}
+
 // Helper function to get base URL from request
 function getBaseUrl(request) {
   // Try to get from request headers first (for internal calls)
@@ -82,13 +102,20 @@ export async function POST(request) {
     const cookies = request.headers.get("cookie") || "";
     const cronSecret = request.headers.get("x-cron-secret") || "";
     const results = [];
+    let quotaExhausted = false;
+    let quotaExhaustedReason = null;
     
     console.log(`Using base URL: ${baseUrl}`);
 
     // Process each trend one by one (ONLY Processing tab items - no URLs)
     for (const trend of trendsResult.rows) {
+      if (quotaExhausted) {
+        console.log(`⏹️ Stopping batch early - quota exhausted (${quotaExhaustedReason}). Remaining items left untouched for the next run.`);
+        break;
+      }
+
       const celebrityName = trend.celebrity_name;
-      
+
       // Double-check: This item should NOT have a URL (Processing tab only)
       if (trend.url && trend.url.trim() !== '') {
         console.log(`⚠️ Skipping ${celebrityName} - has URL (should be in Complete/Update tab, not Processing)`);
@@ -181,6 +208,16 @@ export async function POST(request) {
             url: postUrl,
           });
         } else {
+          const stepErrors = (generateData.steps || [])
+            .filter((s) => s.status === "error")
+            .map((s) => s.error || "")
+            .join(" | ");
+
+          if (looksLikeQuotaError(stepErrors) || looksLikeQuotaError(generateData.error)) {
+            quotaExhausted = true;
+            quotaExhaustedReason = stepErrors || generateData.error;
+          }
+
           results.push({
             celebrity_name: celebrityName,
             trend_id: trend.id,
@@ -191,6 +228,12 @@ export async function POST(request) {
         }
       } catch (error) {
         console.error(`Error processing article for ${celebrityName}:`, error);
+
+        if (looksLikeQuotaError(error.message)) {
+          quotaExhausted = true;
+          quotaExhaustedReason = error.message;
+        }
+
         results.push({
           celebrity_name: celebrityName,
           trend_id: trend.id,
@@ -211,8 +254,11 @@ export async function POST(request) {
     return NextResponse.json({
       success: true,
       processed: trendsResult.rows.length,
+      attempted: results.length,
       succeeded: successCount,
       failed: failureCount,
+      stopped_early_for_quota: quotaExhausted,
+      quota_exhausted_reason: quotaExhaustedReason,
       results: results,
     });
   } catch (error) {
