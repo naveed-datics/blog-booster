@@ -42,6 +42,77 @@ CRITICAL CONTENT QUALITY RULES (MUST FOLLOW):
   return qualityGuidelines + "\n\n" + promptTemplate;
 }
 
+// Pool of possible section angles. A random subset (in random order) is
+// picked per article so no two articles share the same heading skeleton -
+// publishing hundreds of pages with an identical H2/FAQ structure is a
+// well-documented scaled-content signal that gets pages excluded from
+// Google's index ("Crawled - currently not indexed"), regardless of how
+// long or well-written each individual page is.
+const SECTION_POOL = [
+  "Early Life and How Faith Entered the Picture",
+  "Family Background and Religious Upbringing",
+  "What They've Said Publicly About Their Faith",
+  "Religious Practices and How Observant They Are",
+  "How Their Faith Shows Up in Their Public Career",
+  "Community, Charity, or Advocacy Tied to Their Beliefs",
+  "Reactions and Public Discussion of Their Religious Identity",
+  "Faith and Identity: What's Confirmed vs. Speculated",
+  "Key Moments Where Religion Became Public News",
+  "Their Partner's or Family's Religious Background",
+  "Cultural Background vs. Personal Belief - the Distinction",
+  "How They've Addressed Misconceptions About Their Faith",
+  "Religious Holidays or Traditions They're Known to Observe",
+  "Comparisons to Others in Their Field Who Share (or Differ in) Faith",
+  "Timeline: How Their Public Statements on Faith Have Evolved",
+  "What Fans and Media Get Wrong About Their Religion",
+];
+
+const OPENING_HOOK_STYLES = [
+  "Open by directly answering the core question in the first sentence, then explain the nuance.",
+  "Open with the most surprising or least-known fact about their faith, then build context.",
+  "Open by naming the specific controversy or public moment that made people search this, then answer it.",
+  "Open with a short, direct quote (paraphrased, attributed) from the person about their beliefs, then unpack it.",
+  "Open by stating plainly what is confirmed vs. rumored, then explain why the confusion exists.",
+];
+
+const FAQ_QUESTION_BANK = [
+  "a question phrased the way someone would actually type it into Google (informal, specific)",
+  "a question that addresses the single most common misconception about this person's faith",
+  "a question comparing this person's faith to a family member's or partner's",
+  "a question about a specific public event, quote, or controversy tied to their religion",
+  "a question about how their faith is reflected (or not) in their public career",
+  "a question directly asking 'is [name] [specific religion]?' in a way that matches real search phrasing",
+];
+
+function pickRandom(arr, count) {
+  const shuffled = [...arr].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, Math.min(count, arr.length));
+}
+
+// Injects a randomized structural directive that overrides any fixed
+// heading list implied elsewhere in the prompt (including a custom
+// per-website template pulled from the database).
+function injectStructuralVariation(promptTemplate, celebrityName) {
+  const sectionCount = 3 + Math.floor(Math.random() * 3); // 3-5 sections
+  const sections = pickRandom(SECTION_POOL, sectionCount);
+  const hookStyle = pickRandom(OPENING_HOOK_STYLES, 1)[0];
+  const faqAngles = pickRandom(FAQ_QUESTION_BANK, 3);
+
+  const structuralDirective = `
+
+MANDATORY STRUCTURE FOR THIS SPECIFIC ARTICLE (overrides any other heading list, section names, or section order mentioned anywhere else in this prompt):
+- Opening paragraph style: ${hookStyle}
+- Use exactly these ${sections.length} H2 section headings, in this exact order, reworded naturally to fit ${celebrityName} specifically (do not use these placeholder phrasings verbatim - rewrite each into a natural, specific heading about ${celebrityName}):
+${sections.map((s, i) => `  ${i + 1}. ${s}`).join("\n")}
+- Do NOT include any additional standard sections beyond these ${sections.length} plus FAQ/Related Queries.
+- FAQ section: write exactly 3 questions, each based on one of these angles (reworded naturally, not verbatim):
+${faqAngles.map((a, i) => `  ${i + 1}. ${a}`).join("\n")}
+- This exact combination of headings and FAQ angles should NOT resemble the structure of previous articles on this site - each article must have a genuinely different shape, not just different names swapped into the same skeleton.
+`;
+
+  return promptTemplate + "\n\n" + structuralDirective;
+}
+
 // POST endpoint to write blog post
 export async function POST(request) {
   try {
@@ -266,6 +337,14 @@ Output Format:
     // Inject quality guidelines into the prompt template (works for both custom and default)
     promptTemplate = injectQualityGuidelines(promptTemplate);
     console.log("Quality guidelines injected into prompt template");
+
+    // Force per-article structural variation, overriding any fixed heading
+    // list implied by a custom template stored in the database. This is
+    // what actually prevents every article from sharing the same H2/FAQ
+    // skeleton - the root cause of most of this site's pages never getting
+    // indexed by Google.
+    promptTemplate = injectStructuralVariation(promptTemplate, celebrityName);
+    console.log("Structural variation directive injected into prompt template");
 
     let blogContent = "";
 
