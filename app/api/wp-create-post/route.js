@@ -4,8 +4,12 @@ import { auth } from "@/lib/auth";
 // WordPress Configuration
 const WP_BASE =
   process.env.WP_BASE_URL || "https://whatreligionisinfo.com/wp-json/wp/v2";
-const WP_AUTH_HEADER =
-  process.env.WP_AUTH_HEADER || "Basic YWRtaW46YWRtaW5Ad29yazEyMw==";
+if (!process.env.WP_AUTH_HEADER) {
+  throw new Error(
+    "WP_AUTH_HEADER environment variable is not set. Refusing to fall back to a hardcoded credential."
+  );
+}
+const WP_AUTH_HEADER = process.env.WP_AUTH_HEADER;
 
 // Helper function to slugify text
 function slugify(s) {
