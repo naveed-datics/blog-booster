@@ -178,10 +178,13 @@ export async function GET(request) {
 
   const results = [];
   let updated = 0;
+  let tavilyAttempts = 0; // counts every Tavily call made, not just successful updates -
+  // a candidate that fails AFTER the Tavily call (Azure error, WP conflict,
+  // etc.) still spent quota, so this is what actually bounds spend per run.
   let quotaExhausted = false;
 
   for (const trend of candidatesResult.rows) {
-    if (updated >= limit || quotaExhausted) break;
+    if (updated >= limit || tavilyAttempts >= limit || quotaExhausted) break;
 
     const slug = slugFromUrl(trend.url);
     if (!slug) continue;
@@ -201,6 +204,7 @@ export async function GET(request) {
         continue;
       }
 
+      tavilyAttempts++; // count the spend before the call, not after success
       const freshContext = await fetchFreshContext(trend.celebrity_name, tavilyKey);
       const updateSectionHtml = await generateUpdateSection(
         trend.celebrity_name,
@@ -237,6 +241,7 @@ export async function GET(request) {
     success: true,
     candidates_checked: candidatesResult.rows.length,
     updated,
+    tavily_calls_spent: tavilyAttempts,
     stopped_early_for_quota: quotaExhausted,
     results,
   });
