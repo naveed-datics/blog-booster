@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { query } from "@/lib/db";
-import { auth } from "@/lib/auth";
+import { isAuthorized } from "@/lib/cronAuth";
 
 // Helper function to get base URL from request
 function getBaseUrl(request) {
@@ -26,8 +26,7 @@ function getBaseUrl(request) {
 export async function POST(request) {
   try {
     // Check authentication
-    const session = await auth();
-    if (!session || !session.user) {
+    if (!(await isAuthorized(request))) {
       return NextResponse.json(
         { error: "Unauthorized" },
         { status: 401 }
@@ -81,6 +80,7 @@ export async function POST(request) {
 
     const baseUrl = getBaseUrl(request);
     const cookies = request.headers.get("cookie") || "";
+    const cronSecret = request.headers.get("x-cron-secret") || "";
     const results = [];
     
     console.log(`Using base URL: ${baseUrl}`);
@@ -104,6 +104,7 @@ export async function POST(request) {
           headers: {
             "Content-Type": "application/json",
             Cookie: cookies,
+            "x-cron-secret": cronSecret,
           },
           body: JSON.stringify({
             celebrityName,

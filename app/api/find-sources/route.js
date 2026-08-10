@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
+import { isAuthorized } from '@/lib/cronAuth';
 
 // Comprehensive Religion LSI Words Dictionary
 const RELIGION_LSI_WORDS = {
@@ -92,8 +92,7 @@ function checkLsiMatch(text, searchTerms, lsiWords) {
 export async function GET(request) {
   try {
     // Check authentication
-    const session = await auth();
-    if (!session || !session.user) {
+    if (!(await isAuthorized(request))) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }

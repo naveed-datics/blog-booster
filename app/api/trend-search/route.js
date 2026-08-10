@@ -448,9 +448,8 @@ function extractNamesFromTrends(formattedTrends) {
 
 export async function GET(request) {
   try {
-    const { auth } = await import('@/lib/auth');
-    const session = await auth();
-    if (!session || !session.user) {
+    const { isAuthorized } = await import('@/lib/cronAuth');
+    if (!(await isAuthorized(request))) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }

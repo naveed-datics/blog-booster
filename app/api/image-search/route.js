@@ -1,12 +1,11 @@
 import { NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
+import { isAuthorized } from '@/lib/cronAuth';
 
 // GET endpoint for image search using SerpAPI
 export async function GET(request) {
   try {
     // Check authentication
-    const session = await auth();
-    if (!session || !session.user) {
+    if (!(await isAuthorized(request))) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }

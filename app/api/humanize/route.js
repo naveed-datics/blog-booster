@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
-import { auth } from '@/lib/auth';
+import { isAuthorized } from '@/lib/cronAuth';
 
 // REPLACEMENTS dictionary - converting business jargon to simpler language
 const REPLACEMENTS = {
@@ -451,8 +451,7 @@ function humanizeHtml(html) {
 export async function POST(request) {
   try {
     // Check authentication
-    const session = await auth();
-    if (!session || !session.user) {
+    if (!(await isAuthorized(request))) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }
