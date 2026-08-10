@@ -45,6 +45,86 @@ async function setRankMathMeta(postId, { title, description, focusKeyword }) {
   }
 }
 
+// Adds internal links in BOTH directions between the new post and a small
+// random sample of existing posts:
+//   - outbound: a "Related Reading" section appended to the new post,
+//     linking OUT to existing posts (topical relevance, better UX)
+//   - inbound: a short sentence appended to those existing posts, linking
+//     back to the new post
+// The inbound direction is the one that actually matters most for
+// indexing: a brand-new page with zero inbound internal links is exactly
+// the kind of page that sits un-indexed, since Google discovers and
+// prioritizes crawling pages it can reach via links from pages it already
+// knows about. Random sampling (rather than always the same "most recent"
+// posts) spreads link equity around instead of concentrating it on
+// whichever posts happen to be newest at any given time.
+async function addInternalLinks(postId, postTitle, postLink, currentContent) {
+  const result = { outbound: false, inbound: 0, linked_to: [] };
+
+  try {
+    const poolRes = await fetch(
+      `${WP_BASE}/posts?orderby=date&order=desc&per_page=30&exclude=${postId}&_fields=id,slug,title,link`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+    if (!poolRes.ok) return result;
+
+    const pool = await poolRes.json();
+    if (!Array.isArray(pool) || pool.length === 0) return result;
+
+    const chosen = [...pool].sort(() => Math.random() - 0.5).slice(0, Math.min(2, pool.length));
+
+    // Outbound: append a Related Reading section to the new post.
+    const outboundItems = chosen
+      .map((p) => `<li><a href="${p.link}">${p.title.rendered}</a></li>`)
+      .join("\n");
+    const withRelated = `${currentContent}\n\n<h2>Related Reading</h2>\n<ul>\n${outboundItems}\n</ul>`;
+
+    const outboundRes = await fetch(`${WP_BASE}/posts/${postId}`, {
+      method: "POST",
+      headers: { Authorization: WP_AUTH_HEADER, "Content-Type": "application/json" },
+      body: JSON.stringify({ content: withRelated }),
+    });
+    result.outbound = outboundRes.ok;
+    if (!outboundRes.ok) {
+      console.error(`Failed to add outbound links to post ${postId}: ${outboundRes.status}`);
+    }
+
+    // Inbound: append a short linking sentence to each chosen existing post.
+    for (const p of chosen) {
+      try {
+        const fullRes = await fetch(`${WP_BASE}/posts/${p.id}?_fields=content`, {
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!fullRes.ok) continue;
+
+        const fullData = await fullRes.json();
+        const inboundSentence = `\n\n<p>You might also be interested in <a href="${postLink}">${postTitle}</a>.</p>`;
+        const updatedContent = fullData.content.rendered + inboundSentence;
+
+        const inboundRes = await fetch(`${WP_BASE}/posts/${p.id}`, {
+          method: "POST",
+          headers: { Authorization: WP_AUTH_HEADER, "Content-Type": "application/json" },
+          body: JSON.stringify({ content: updatedContent }),
+        });
+
+        if (inboundRes.ok) {
+          result.inbound++;
+          result.linked_to.push(p.link);
+        } else {
+          console.error(`Failed to add inbound link to post ${p.id}: ${inboundRes.status}`);
+        }
+      } catch (error) {
+        console.error(`Error adding inbound link to post ${p.id}:`, error);
+      }
+    }
+
+    return result;
+  } catch (error) {
+    console.error("Error adding internal links:", error);
+    return result; // non-fatal - the post itself is already created successfully
+  }
+}
+
 // Helper function to slugify text
 function slugify(s) {
   s = s.trim().toLowerCase();
@@ -298,8 +378,11 @@ export async function GET(request) {
       postContent
     );
 
-    // Combine meta description and content
-    const postContentFinal = metaDescription + "\n\n" + contentHtml;
+    // The meta description is now stored properly via setRankMathMeta()
+    // below (Rank Math's own SEO description field), so it no longer needs
+    // to be duplicated into the visible article body as a leading
+    // paragraph - that read as formulaic/redundant to actual readers.
+    const postContentFinal = contentHtml;
 
     const headersJson = {
       Authorization: WP_AUTH_HEADER,
@@ -472,6 +555,16 @@ export async function GET(request) {
       focusKeyword: focusKeyword,
     });
 
+    // Add internal links (both directions) between this new post and a
+    // random sample of existing posts - see addInternalLinks() for why
+    // this matters for indexing, not just topical relevance.
+    const internalLinks = await addInternalLinks(
+      postId,
+      seoTitle,
+      postData.link,
+      postContentFinal
+    );
+
     // Verify featured_media was set in the post
     if (
       mediaId &&
@@ -554,6 +647,7 @@ export async function GET(request) {
       status: "success",
       post_id: postId,
       rank_math_meta_saved: rankMathMetaSaved,
+      internal_links: internalLinks,
       media_id: mediaId || null,
       message: mediaId
         ? `Post ID ${postId} created with featured image ID ${mediaId}`
@@ -634,8 +728,11 @@ export async function POST(request) {
       postContent
     );
 
-    // Combine meta description and content
-    const postContentFinal = metaDescription + "\n\n" + contentHtml;
+    // The meta description is now stored properly via setRankMathMeta()
+    // below (Rank Math's own SEO description field), so it no longer needs
+    // to be duplicated into the visible article body as a leading
+    // paragraph - that read as formulaic/redundant to actual readers.
+    const postContentFinal = contentHtml;
 
     const headersJson = {
       Authorization: WP_AUTH_HEADER,
@@ -808,6 +905,16 @@ export async function POST(request) {
       focusKeyword: focusKeyword,
     });
 
+    // Add internal links (both directions) between this new post and a
+    // random sample of existing posts - see addInternalLinks() for why
+    // this matters for indexing, not just topical relevance.
+    const internalLinks = await addInternalLinks(
+      postId,
+      seoTitle,
+      postData.link,
+      postContentFinal
+    );
+
     // Verify featured_media was set in the post
     if (
       mediaId &&
@@ -890,6 +997,7 @@ export async function POST(request) {
       status: "success",
       post_id: postId,
       rank_math_meta_saved: rankMathMetaSaved,
+      internal_links: internalLinks,
       media_id: mediaId || null,
       message: mediaId
         ? `Post ID ${postId} created with featured image ID ${mediaId}`
