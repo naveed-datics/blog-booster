@@ -11,6 +11,40 @@ if (!process.env.WP_AUTH_HEADER) {
 }
 const WP_AUTH_HEADER = process.env.WP_AUTH_HEADER;
 
+// The standard WP REST `meta` field on POST /posts silently does NOT
+// persist Rank Math's SEO fields (rank_math_title, rank_math_description,
+// rank_math_focus_keyword) - verified directly: setting them via the
+// normal post-creation payload has no effect on the rendered <title> tag
+// or meta description, with no error either, so this failure is invisible
+// unless checked. Rank Math exposes its own dedicated endpoint that
+// actually writes to the right underlying storage - confirmed working via
+// a live test (including its %sep%/%sitename% variable substitution).
+async function setRankMathMeta(postId, { title, description, focusKeyword }) {
+  try {
+    const res = await fetch(`${WP_BASE.replace(/\/wp\/v2$/, "")}/rankmath/v1/updateMeta`, {
+      method: "POST",
+      headers: { Authorization: WP_AUTH_HEADER, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        objectType: "post",
+        objectID: postId,
+        meta: {
+          rank_math_title: title,
+          rank_math_description: description,
+          rank_math_focus_keyword: focusKeyword,
+        },
+      }),
+    });
+    if (!res.ok) {
+      console.error(`Rank Math updateMeta failed for post ${postId}: ${res.status} ${await res.text()}`);
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error(`Rank Math updateMeta error for post ${postId}:`, error);
+    return false; // non-fatal - the post itself is already created successfully
+  }
+}
+
 // Helper function to slugify text
 function slugify(s) {
   s = s.trim().toLowerCase();
@@ -429,6 +463,15 @@ export async function GET(request) {
     const postData = await postResponse.json();
     const postId = postData.id;
 
+    // The `meta` field in the postPayload above does NOT actually persist
+    // Rank Math's SEO title/description (see setRankMathMeta comment) -
+    // this is the call that actually works.
+    const rankMathMetaSaved = await setRankMathMeta(postId, {
+      title: seoTitle,
+      description: metaDescription,
+      focusKeyword: focusKeyword,
+    });
+
     // Verify featured_media was set in the post
     if (
       mediaId &&
@@ -510,6 +553,7 @@ export async function GET(request) {
     return NextResponse.json({
       status: "success",
       post_id: postId,
+      rank_math_meta_saved: rankMathMetaSaved,
       media_id: mediaId || null,
       message: mediaId
         ? `Post ID ${postId} created with featured image ID ${mediaId}`
@@ -755,6 +799,15 @@ export async function POST(request) {
     const postData = await postResponse.json();
     const postId = postData.id;
 
+    // The `meta` field in the postPayload above does NOT actually persist
+    // Rank Math's SEO title/description (see setRankMathMeta comment) -
+    // this is the call that actually works.
+    const rankMathMetaSaved = await setRankMathMeta(postId, {
+      title: seoTitle,
+      description: metaDescription,
+      focusKeyword: focusKeyword,
+    });
+
     // Verify featured_media was set in the post
     if (
       mediaId &&
@@ -836,6 +889,7 @@ export async function POST(request) {
     return NextResponse.json({
       status: "success",
       post_id: postId,
+      rank_math_meta_saved: rankMathMetaSaved,
       media_id: mediaId || null,
       message: mediaId
         ? `Post ID ${postId} created with featured image ID ${mediaId}`
