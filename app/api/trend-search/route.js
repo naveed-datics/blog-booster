@@ -73,23 +73,98 @@ async function getRisingTrends(searchQuery = 'religion') {
   }
 }
 
-// Helper function to search for celebrity URL (equivalent to search_celebrity_url)
+// Normalizes a name the same way WordPress derives slugs from titles:
+// lowercase, strip accents, strip punctuation, spaces -> hyphens. This lets
+// us compare "Kylian Mbappé" against a slug like "kylian-mbappe-religion"
+// (or the truncated "kylian-mbapp-religion") without needing exact string
+// equality.
+function slugifyName(name) {
+  return name
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '') // strip accents
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-');
+}
+
+// Strips a numeric WordPress duplicate-slug suffix, e.g. "-2", "-3", so
+// "anne-hathaway-religion-2" compares equal to "anne-hathaway-religion".
+function stripSlugSuffix(slug) {
+  return slug.replace(/-\d+$/, '');
+}
+
+// How many of the first name's characters must match the second, to catch
+// near-misses like accent-stripping bugs ("mbappe" vs "mbapp") without
+// matching on totally unrelated short prefixes.
+// Levenshtein edit distance - needed because the accent-truncation bug
+// drops a character in the MIDDLE of a slug (e.g. "kylian-mbappe-religion"
+// -> "kylian-mbapp-religion", missing the 'e' before "-religion" follows),
+// not just at the end. A simple startsWith/prefix check misses this
+// entirely since the strings diverge mid-string, not just by length.
+function levenshteinDistance(a, b) {
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+function slugsAreCloseMatch(a, b) {
+  if (a === b) return true;
+  const minLen = Math.min(a.length, b.length);
+  if (minLen < 5) return false; // too short to compare safely
+
+  // Allow more edits for longer slugs (typos/accent drops scale with name
+  // length), but keep the threshold tight enough that genuinely different
+  // names (which differ by many characters) don't false-positive.
+  const maxDistance = minLen < 12 ? 1 : minLen < 20 ? 2 : 3;
+  return levenshteinDistance(a, b) <= maxDistance;
+}
+
+// Checks whether this celebrity already has a published article on the
+// site before we let the pipeline write a new one. This is the fix for a
+// real incident: without it, any trending name that already had coverage
+// got a brand-new duplicate post every time it trended again - one name
+// was published 3 times in a single run.
 async function searchCelebrityUrl(celebrity) {
   try {
-    // This is a placeholder - implement your actual WordPress/URL search logic
-    // For now, return a mock URL or search Google
-    const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(celebrity)}`;
-    
-    // In production, you would:
-    // 1. Search your WordPress database
-    // 2. Search a specific website
-    // 3. Use a search API
-    
-    // For now, return null or a placeholder
+    const wpBase = process.env.WP_BASE_URL || 'https://whatreligionisinfo.com/wp-json/wp/v2';
+    const targetSlug = `${slugifyName(celebrity)}-religion`;
+
+    const response = await fetch(
+      `${wpBase}/posts?search=${encodeURIComponent(celebrity)}&per_page=10&_fields=id,slug,link,title,status`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+
+    if (!response.ok) {
+      console.error(`WordPress search failed for "${celebrity}": ${response.status}`);
+      return null; // fail open to "no match found" rather than blocking the pipeline
+    }
+
+    const posts = await response.json();
+    if (!Array.isArray(posts)) return null;
+
+    for (const post of posts) {
+      const candidateSlug = stripSlugSuffix((post.slug || '').toLowerCase());
+      if (slugsAreCloseMatch(targetSlug, candidateSlug)) {
+        console.log(`🔁 Duplicate check: "${celebrity}" already covered by ${post.link} (slug: ${post.slug})`);
+        return post.link;
+      }
+    }
+
     return null;
   } catch (error) {
     console.error(`Error searching for ${celebrity}:`, error);
-    return null;
+    return null; // fail open - a broken duplicate check shouldn't block trend collection
   }
 }
 
