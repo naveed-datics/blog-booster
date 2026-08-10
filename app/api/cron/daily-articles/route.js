@@ -11,6 +11,7 @@ import { NextResponse } from "next/server";
 // without ever needing a login session.
 
 const DAILY_ARTICLE_LIMIT = 10;
+const DAILY_REFRESH_LIMIT = 5; // stale-but-trending existing articles to refresh/day
 const TARGET_WEBSITE_ID = 1; // whatreligionisinfo.com
 
 function getBaseUrl(request) {
@@ -36,6 +37,7 @@ export async function GET(request) {
     website_id: TARGET_WEBSITE_ID,
     trend_search: null,
     auto_generate: null,
+    refresh_stale: null,
     error: null,
   };
 
@@ -75,6 +77,24 @@ export async function GET(request) {
       );
     }
     summary.auto_generate = await autoGenResponse.json();
+
+    // Step 3: refresh existing articles that are both currently trending
+    // again AND stale, so that search interest we'd otherwise waste (the
+    // duplicate check in step 1 skips writing a new article for these)
+    // still gets captured. No separate reindex call needed here - Rank
+    // Math's Instant Indexing module already auto-submits updated URLs.
+    const refreshUrl = `${baseUrl}/api/update-stale-articles?website_id=${TARGET_WEBSITE_ID}&limit=${DAILY_REFRESH_LIMIT}`;
+    const refreshResponse = await fetch(refreshUrl, {
+      headers: { "x-cron-secret": cronSecret },
+    });
+
+    if (!refreshResponse.ok) {
+      const errorText = await refreshResponse.text();
+      throw new Error(
+        `update-stale-articles failed: ${refreshResponse.status} ${errorText.substring(0, 300)}`
+      );
+    }
+    summary.refresh_stale = await refreshResponse.json();
   } catch (error) {
     console.error("[cron/daily-articles] Error:", error);
     summary.error = error.message;
