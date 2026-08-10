@@ -1,13 +1,11 @@
 import { NextResponse } from "next/server";
 import { query } from "@/lib/db";
-import { auth } from "@/lib/auth";
+import { isAuthorized } from "@/lib/cronAuth";
 
 // GET endpoint to check if a WordPress post exists for a celebrity/website
 export async function GET(request) {
   try {
-    const session = await auth();
-
-    if (!session || !session.user) {
+    if (!(await isAuthorized(request))) {
       return NextResponse.json(
         { error: "Unauthorized" },
         { status: 401 }
@@ -57,9 +55,7 @@ export async function GET(request) {
 // POST endpoint to save WordPress post data
 export async function POST(request) {
   try {
-    const session = await auth();
-
-    if (!session || !session.user) {
+    if (!(await isAuthorized(request))) {
       return NextResponse.json(
         { error: "Unauthorized" },
         { status: 401 }

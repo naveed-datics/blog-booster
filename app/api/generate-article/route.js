@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { isAuthorized } from "@/lib/cronAuth";
 
 // Helper function to get base URL from request
 function getBaseUrl(request) {
@@ -52,8 +52,7 @@ function createSSEStream(stepsCallback) {
 export async function POST(request) {
   try {
     // Check authentication
-    const session = await auth();
-    if (!session || !session.user) {
+    if (!(await isAuthorized(request))) {
       return NextResponse.json(
         { error: "Unauthorized" },
         { status: 401 }
@@ -76,7 +75,10 @@ export async function POST(request) {
 
     // Get cookies from the original request to pass to internal API calls
     const cookies = request.headers.get("cookie") || "";
-    
+    // Forward the cron secret too, so this works when called by the daily
+    // cron pipeline (no browser session cookie present in that case).
+    const cronSecret = request.headers.get("x-cron-secret") || "";
+
     console.log(`[Generate Article] Using base URL: ${baseUrl} for celebrity: ${celebrityName}`);
 
     // Check if client wants streaming (SSE)
@@ -93,6 +95,7 @@ export async function POST(request) {
         {
           headers: {
             Cookie: cookies,
+            "x-cron-secret": cronSecret,
           },
         }
       );
@@ -119,6 +122,7 @@ export async function POST(request) {
         {
           headers: {
             Cookie: cookies,
+            "x-cron-secret": cronSecret,
           },
         }
       );
@@ -153,6 +157,7 @@ export async function POST(request) {
           headers: { 
             "Content-Type": "application/json",
             Cookie: cookies,
+            "x-cron-secret": cronSecret,
           },
           body: JSON.stringify({ urls }),
         });
@@ -190,6 +195,7 @@ export async function POST(request) {
             headers: { 
               "Content-Type": "text/plain",
               Cookie: cookies,
+            "x-cron-secret": cronSecret,
             },
             body: combinedContent,
           });
@@ -210,6 +216,7 @@ export async function POST(request) {
               headers: { 
                 "Content-Type": "application/json",
                 Cookie: cookies,
+            "x-cron-secret": cronSecret,
               },
               body: JSON.stringify({
                 html: blogData.blog_post.content,
@@ -240,6 +247,7 @@ export async function POST(request) {
               headers: {
                 "Content-Type": "application/json",
                 Cookie: cookies,
+            "x-cron-secret": cronSecret,
               },
               body: JSON.stringify({
                 post_content: humanizedContent,
@@ -276,6 +284,7 @@ export async function POST(request) {
                   headers: { 
                     "Content-Type": "application/json",
                     Cookie: cookies,
+            "x-cron-secret": cronSecret,
                   },
                   body: JSON.stringify({
                     website_id: parseInt(websiteId),

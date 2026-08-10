@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { query } from "@/lib/db";
-import { auth } from "@/lib/auth";
+import { isAuthorized } from "@/lib/cronAuth";
 
 // Function to inject content quality guidelines into prompt template
 function injectQualityGuidelines(promptTemplate) {
@@ -46,8 +46,7 @@ CRITICAL CONTENT QUALITY RULES (MUST FOLLOW):
 export async function POST(request) {
   try {
     // Check authentication
-    const session = await auth();
-    if (!session || !session.user) {
+    if (!(await isAuthorized(request))) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
