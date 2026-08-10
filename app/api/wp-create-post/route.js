@@ -378,8 +378,11 @@ export async function GET(request) {
       postContent
     );
 
-    // Combine meta description and content
-    const postContentFinal = metaDescription + "\n\n" + contentHtml;
+    // The meta description is now stored properly via setRankMathMeta()
+    // below (Rank Math's own SEO description field), so it no longer needs
+    // to be duplicated into the visible article body as a leading
+    // paragraph - that read as formulaic/redundant to actual readers.
+    const postContentFinal = contentHtml;
 
     const headersJson = {
       Authorization: WP_AUTH_HEADER,
@@ -725,8 +728,11 @@ export async function POST(request) {
       postContent
     );
 
-    // Combine meta description and content
-    const postContentFinal = metaDescription + "\n\n" + contentHtml;
+    // The meta description is now stored properly via setRankMathMeta()
+    // below (Rank Math's own SEO description field), so it no longer needs
+    // to be duplicated into the visible article body as a leading
+    // paragraph - that read as formulaic/redundant to actual readers.
+    const postContentFinal = contentHtml;
 
     const headersJson = {
       Authorization: WP_AUTH_HEADER,
