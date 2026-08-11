@@ -14,13 +14,37 @@ const DAILY_ARTICLE_LIMIT = 10;
 const DAILY_REFRESH_LIMIT = 5; // stale-but-trending existing articles to refresh/day
 const TARGET_WEBSITE_ID = 1; // whatreligionisinfo.com
 
-function getBaseUrl(request) {
-  const host = request.headers.get("host");
-  const protocol = request.headers.get("x-forwarded-proto") || "https";
-  if (host) {
-    return `${protocol}://${host}`;
+// Deliberately NOT derived from the request's host header. This route's
+// internal calls (trend-search, auto-generate-articles, etc.) must always
+// hit the production domain - if this function is ever invoked via a
+// deployment-specific preview URL (which has Vercel's SSO/deployment
+// protection enabled), a host-derived base URL would make every internal
+// fetch hit that SSO gate instead of the real API, getting back an HTML
+// login page where JSON was expected (a real incident: caused
+// `SyntaxError: Unexpected token '<' ... is not valid JSON` when someone
+// manually triggered this route via a preview URL instead of production).
+function getBaseUrl() {
+  return (
+    process.env.NEXT_PUBLIC_BASE_URL ||
+    "https://blog-booster.vercel.app"
+  );
+}
+
+// Defense-in-depth: even with getBaseUrl() fixed, parse failures should
+// produce a clear, actionable message rather than a bare
+// "Unexpected token '<' ... is not valid JSON" SyntaxError - that message
+// alone gives no hint of WHERE the HTML came from. Checking content-type
+// before parsing catches this class of failure regardless of cause.
+async function parseJsonOrThrow(response, label) {
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    const bodyText = await response.text();
+    throw new Error(
+      `${label} returned non-JSON response (content-type: "${contentType}", status: ${response.status}). ` +
+      `First 200 chars: ${bodyText.substring(0, 200)}`
+    );
   }
-  return process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+  return response.json();
 }
 
 export async function GET(request) {
@@ -31,7 +55,7 @@ export async function GET(request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const baseUrl = getBaseUrl(request);
+  const baseUrl = getBaseUrl();
   const summary = {
     started_at: new Date().toISOString(),
     website_id: TARGET_WEBSITE_ID,
@@ -54,7 +78,7 @@ export async function GET(request) {
         `trend-search failed: ${trendResponse.status} ${errorText.substring(0, 300)}`
       );
     }
-    summary.trend_search = await trendResponse.json();
+    summary.trend_search = await parseJsonOrThrow(trendResponse, "trend-search");
 
     // Step 2: generate + publish articles for whatever is now in the queue,
     // capped at DAILY_ARTICLE_LIMIT for the day.
@@ -76,7 +100,7 @@ export async function GET(request) {
         `auto-generate-articles failed: ${autoGenResponse.status} ${errorText.substring(0, 300)}`
       );
     }
-    summary.auto_generate = await autoGenResponse.json();
+    summary.auto_generate = await parseJsonOrThrow(autoGenResponse, "auto-generate-articles");
 
     // Step 3: refresh existing articles that are both currently trending
     // again AND stale, so that search interest we'd otherwise waste (the
@@ -94,7 +118,7 @@ export async function GET(request) {
         `update-stale-articles failed: ${refreshResponse.status} ${errorText.substring(0, 300)}`
       );
     }
-    summary.refresh_stale = await refreshResponse.json();
+    summary.refresh_stale = await parseJsonOrThrow(refreshResponse, "update-stale-articles");
   } catch (error) {
     console.error("[cron/daily-articles] Error:", error);
     summary.error = error.message;
