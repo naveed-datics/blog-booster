@@ -129,6 +129,26 @@ async function saveTrendsToDatabase(searchQuery, trendsResult, celebList, result
       
       // Check if name is valid
       const lowerName = cleanCelebName.toLowerCase();
+      const nameWords = lowerName.split(/\s+/).filter(Boolean);
+      const firstWord = nameWords[0] || '';
+      const lastWord = nameWords[nameWords.length - 1] || '';
+      // Question-fragment terms like "Is Christianity A" or "What Was The
+      // First" pass the exact-match invalidTerms check (the FULL string
+      // isn't in the list) but are still obviously not a person's name.
+      // Catches this by checking the first/last word instead of the whole
+      // string - real names essentially never start with a question word
+      // or end with a dangling article/preposition.
+      const FRAGMENT_START_WORDS = new Set([
+        'is', 'are', 'was', 'were', 'what', 'who', 'where', 'when', 'why',
+        'how', 'which', 'the', 'a', 'an', 'que', 'el', 'la', 'los', 'las',
+        'blog', 'cartula', 'does', 'do', 'can', 'should', 'will',
+      ]);
+      const FRAGMENT_END_WORDS = new Set([
+        'of', 'a', 'an', 'the', 'de', 'la', 'el', 'del', 'que', 'to', 'for',
+        'and', 'or', 'in', 'on', 'at',
+      ]);
+      const isFragment = FRAGMENT_START_WORDS.has(firstWord) || FRAGMENT_END_WORDS.has(lastWord);
+
       const isInvalid = invalidTerms.includes(lowerName) ||
         lowerName.includes('religion') ||
         lowerName.includes('jeans') ||
@@ -138,6 +158,7 @@ async function saveTrendsToDatabase(searchQuery, trendsResult, celebList, result
         lowerName.includes('what religion') ||
         lowerName.includes('whoever') ||
         lowerName.includes('main religion') ||
+        isFragment ||
         lowerName.length < 3; // Minimum 3 characters
       
       // Require at least two words (first + last name) to reduce generic single-word terms
@@ -335,16 +356,34 @@ IMPORTANT:
           
           // Filter out obvious non-celebrities
           const lowerName = cleanName.toLowerCase();
+          const nameWords = lowerName.split(/\s+/).filter(Boolean);
+          const firstWord = nameWords[0] || '';
+          const lastWord = nameWords[nameWords.length - 1] || '';
+          // See the matching comment in saveTrendsToDatabase() above -
+          // question-fragment terms like "Is Christianity A" pass the
+          // exact-match invalidTerms check but aren't a person's name.
+          const FRAGMENT_START_WORDS = new Set([
+            'is', 'are', 'was', 'were', 'what', 'who', 'where', 'when', 'why',
+            'how', 'which', 'the', 'a', 'an', 'que', 'el', 'la', 'los', 'las',
+            'blog', 'cartula', 'does', 'do', 'can', 'should', 'will',
+          ]);
+          const FRAGMENT_END_WORDS = new Set([
+            'of', 'a', 'an', 'the', 'de', 'la', 'el', 'del', 'que', 'to', 'for',
+            'and', 'or', 'in', 'on', 'at',
+          ]);
+          const isFragment = FRAGMENT_START_WORDS.has(firstWord) || FRAGMENT_END_WORDS.has(lastWord);
+
           const isInvalid = invalidTerms.includes(lowerName) ||
-            lowerName.includes('religion') || 
-            lowerName.includes('jeans') || 
+            lowerName.includes('religion') ||
+            lowerName.includes('jeans') ||
             lowerName.includes('breakout') ||
             lowerName.includes('true religion') ||
             lowerName.includes('what is') ||
             lowerName.includes('what religion') ||
             lowerName.includes('main religion') ||
-            lowerName.includes('whoever');
-          
+            lowerName.includes('whoever') ||
+            isFragment;
+
           if (isInvalid) {
             return null;
           }
