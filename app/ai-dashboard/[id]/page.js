@@ -1222,7 +1222,16 @@ export default function AIDashboardPage() {
                               )}
                             </TableCell>
                             <TableCell className="text-right">
-                              <div className="flex justify-end">
+                              <div className="flex justify-end gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleDeleteTrend(trend.id)}
+                                  className="flex items-center gap-1 text-red-600 border-red-200 hover:bg-red-50 dark:hover:bg-red-900/20"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                  Delete
+                                </Button>
                                 <Button
                                   variant="outline"
                                   size="sm"
@@ -1293,9 +1302,8 @@ export default function AIDashboardPage() {
                           <TableHead>Keyword</TableHead>
                           <TableHead>Status</TableHead>
                           <TableHead>Date</TableHead>
-                          <TableHead className="text-right">
-                            Wordpress URL
-                          </TableHead>
+                          <TableHead>Wordpress URL</TableHead>
+                          <TableHead className="text-right">Action</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -1307,9 +1315,32 @@ export default function AIDashboardPage() {
                               </span>
                             </TableCell>
                             <TableCell>
-                              <span className="px-2 py-1 text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300 rounded">
-                                Completed
-                              </span>
+                              {(() => {
+                                const urlData = celebrityUrls[trend.celebrity_name];
+                                const trendDate = new Date(trend.created_at);
+                                const lastmodDate = urlData.lastmod
+                                  ? new Date(urlData.lastmod)
+                                  : null;
+                                // If the post was last modified on/around when
+                                // this trend surfaced, it was created fresh for
+                                // this trend. If it was already modified well
+                                // before, this trend just matched a
+                                // pre-existing article via the duplicate check.
+                                const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+                                const isNew =
+                                  !lastmodDate ||
+                                  lastmodDate.getTime() >= trendDate.getTime() - ONE_DAY_MS;
+
+                                return isNew ? (
+                                  <span className="px-2 py-1 text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300 rounded">
+                                    Completed - New
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-1 text-xs font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 rounded">
+                                    Completed - Old
+                                  </span>
+                                );
+                              })()}
                             </TableCell>
                             <TableCell>
                               {new Date(trend.created_at).toLocaleDateString(
@@ -1321,8 +1352,8 @@ export default function AIDashboardPage() {
                                 }
                               )}
                             </TableCell>
-                            <TableCell className="text-right">
-                              <div className="flex justify-end">
+                            <TableCell>
+                              <div className="flex justify-start">
                                 <a
                                   href={celebrityUrls[trend.celebrity_name].url}
                                   target="_blank"
@@ -1332,6 +1363,19 @@ export default function AIDashboardPage() {
                                   View Post
                                   <ExternalLink className="h-3 w-3" />
                                 </a>
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex justify-end">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleDeleteTrend(trend.id)}
+                                  className="flex items-center gap-1 text-red-600 border-red-200 hover:bg-red-50 dark:hover:bg-red-900/20"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                  Delete
+                                </Button>
                               </div>
                             </TableCell>
                           </TableRow>
