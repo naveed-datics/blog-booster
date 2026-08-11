@@ -71,7 +71,10 @@ export default function AIDashboardPage() {
   const [pendingCreateArticle, setPendingCreateArticle] = useState(null); // { keyword, url }
   const [createArticleSearching, setCreateArticleSearching] = useState(false);
   const [createArticleDeleting, setCreateArticleDeleting] = useState(false);
-  
+  const [cronLogs, setCronLogs] = useState([]);
+  const [cronLogsLoading, setCronLogsLoading] = useState(false);
+  const [expandedLogId, setExpandedLogId] = useState(null);
+
   // Ref to hold handleGenerateArticle to avoid circular dependency
   const handleGenerateArticleRef = useRef(null);
 
@@ -82,6 +85,30 @@ export default function AIDashboardPage() {
       fetchWebsiteData();
     }
   }, [status, websiteId, router]);
+
+  const fetchCronLogs = useCallback(async () => {
+    if (!websiteId) return;
+    setCronLogsLoading(true);
+    try {
+      const res = await fetch(`/api/cron-logs?website_id=${websiteId}&limit=30`);
+      const data = await res.json();
+      if (res.ok) {
+        setCronLogs(data.logs || []);
+      } else {
+        toast.error(data.error || "Failed to load cron logs");
+      }
+    } catch (err) {
+      toast.error("Failed to load cron logs");
+    } finally {
+      setCronLogsLoading(false);
+    }
+  }, [websiteId]);
+
+  useEffect(() => {
+    if (status === "authenticated" && websiteId) {
+      fetchCronLogs();
+    }
+  }, [status, websiteId, fetchCronLogs]);
 
   // Automation Logic: Trigger fetchTrends automatically if time matches
   useEffect(() => {
@@ -967,6 +994,7 @@ export default function AIDashboardPage() {
               <TabsTrigger value="processing">Processing</TabsTrigger>
               <TabsTrigger value="update">Update</TabsTrigger>
               <TabsTrigger value="complete">Complete</TabsTrigger>
+              <TabsTrigger value="cron-logs">Cron Logs</TabsTrigger>
             </TabsList>
 
             <TabsContent value="processing">
@@ -1313,6 +1341,93 @@ export default function AIDashboardPage() {
                   </div>
                 );
               })()}
+            </TabsContent>
+
+            <TabsContent value="cron-logs">
+              <div className="flex justify-between items-center mb-3">
+                <p className="text-sm text-muted-foreground">
+                  Results from each daily cron run (trend search, article generation, stale-article refresh).
+                </p>
+                <Button
+                  onClick={fetchCronLogs}
+                  disabled={cronLogsLoading}
+                  variant="outline"
+                  size="sm"
+                  className="flex items-center gap-2"
+                >
+                  <RefreshCw className={`h-4 w-4 ${cronLogsLoading ? "animate-spin" : ""}`} />
+                  Refresh
+                </Button>
+              </div>
+
+              {cronLogs.length === 0 ? (
+                <div className="text-center py-10 text-muted-foreground text-sm">
+                  {cronLogsLoading ? "Loading..." : "No cron runs logged yet."}
+                </div>
+              ) : (
+                <div className="border rounded-md overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Run (started)</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>New Articles</TableHead>
+                        <TableHead>Refreshed</TableHead>
+                        <TableHead>Trends Found</TableHead>
+                        <TableHead></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {cronLogs.map((log) => (
+                        <>
+                          <TableRow key={log.id}>
+                            <TableCell className="whitespace-nowrap">
+                              {new Date(log.started_at).toLocaleString()}
+                            </TableCell>
+                            <TableCell>
+                              {log.success ? (
+                                <span className="text-green-600 font-medium">Success</span>
+                              ) : (
+                                <span className="text-red-600 font-medium">Error</span>
+                              )}
+                            </TableCell>
+                            <TableCell>{log.new_articles_count}</TableCell>
+                            <TableCell>{log.refreshed_articles_count}</TableCell>
+                            <TableCell>{log.trends_found_count}</TableCell>
+                            <TableCell>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() =>
+                                  setExpandedLogId(
+                                    expandedLogId === log.id ? null : log.id
+                                  )
+                                }
+                              >
+                                {expandedLogId === log.id ? "Hide" : "Details"}
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                          {expandedLogId === log.id && (
+                            <TableRow key={`${log.id}-details`}>
+                              <TableCell colSpan={6}>
+                                {log.error_message && (
+                                  <p className="text-sm text-red-600 mb-2">
+                                    {log.error_message}
+                                  </p>
+                                )}
+                                <pre className="text-xs bg-muted p-3 rounded-md overflow-x-auto whitespace-pre-wrap">
+                                  {JSON.stringify(log.summary, null, 2)}
+                                </pre>
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
             </TabsContent>
           </Tabs>
           {trendingList.length > 25 && (
