@@ -1307,9 +1307,32 @@ export default function AIDashboardPage() {
                               </span>
                             </TableCell>
                             <TableCell>
-                              <span className="px-2 py-1 text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300 rounded">
-                                Completed
-                              </span>
+                              {(() => {
+                                const urlData = celebrityUrls[trend.celebrity_name];
+                                const trendDate = new Date(trend.created_at);
+                                const lastmodDate = urlData.lastmod
+                                  ? new Date(urlData.lastmod)
+                                  : null;
+                                // If the post was last modified on/around when
+                                // this trend surfaced, it was created fresh for
+                                // this trend. If it was already modified well
+                                // before, this trend just matched a
+                                // pre-existing article via the duplicate check.
+                                const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+                                const isNew =
+                                  !lastmodDate ||
+                                  lastmodDate.getTime() >= trendDate.getTime() - ONE_DAY_MS;
+
+                                return isNew ? (
+                                  <span className="px-2 py-1 text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300 rounded">
+                                    Completed - New
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-1 text-xs font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 rounded">
+                                    Completed - Old
+                                  </span>
+                                );
+                              })()}
                             </TableCell>
                             <TableCell>
                               {new Date(trend.created_at).toLocaleDateString(
