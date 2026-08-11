@@ -1222,7 +1222,16 @@ export default function AIDashboardPage() {
                               )}
                             </TableCell>
                             <TableCell className="text-right">
-                              <div className="flex justify-end">
+                              <div className="flex justify-end gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleDeleteTrend(trend.id)}
+                                  className="flex items-center gap-1 text-red-600 border-red-200 hover:bg-red-50 dark:hover:bg-red-900/20"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                  Delete
+                                </Button>
                                 <Button
                                   variant="outline"
                                   size="sm"
@@ -1293,9 +1302,8 @@ export default function AIDashboardPage() {
                           <TableHead>Keyword</TableHead>
                           <TableHead>Status</TableHead>
                           <TableHead>Date</TableHead>
-                          <TableHead className="text-right">
-                            Wordpress URL
-                          </TableHead>
+                          <TableHead>Wordpress URL</TableHead>
+                          <TableHead className="text-right">Action</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -1344,8 +1352,8 @@ export default function AIDashboardPage() {
                                 }
                               )}
                             </TableCell>
-                            <TableCell className="text-right">
-                              <div className="flex justify-end">
+                            <TableCell>
+                              <div className="flex justify-start">
                                 <a
                                   href={celebrityUrls[trend.celebrity_name].url}
                                   target="_blank"
@@ -1355,6 +1363,19 @@ export default function AIDashboardPage() {
                                   View Post
                                   <ExternalLink className="h-3 w-3" />
                                 </a>
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex justify-end">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleDeleteTrend(trend.id)}
+                                  className="flex items-center gap-1 text-red-600 border-red-200 hover:bg-red-50 dark:hover:bg-red-900/20"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                  Delete
+                                </Button>
                               </div>
                             </TableCell>
                           </TableRow>
