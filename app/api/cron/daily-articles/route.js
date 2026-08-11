@@ -1,4 +1,52 @@
 import { NextResponse } from "next/server";
+import { query } from "@/lib/db";
+
+// Table may not exist yet on a fresh deploy (created lazily here instead of
+// requiring a separate manual migration step before this route can log a
+// run) - cheap no-op once the table is present.
+const ENSURE_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS cron_run_logs (
+    id SERIAL PRIMARY KEY,
+    website_id INTEGER NOT NULL REFERENCES websites(id) ON DELETE CASCADE,
+    started_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    finished_at TIMESTAMP WITH TIME ZONE,
+    success BOOLEAN NOT NULL DEFAULT true,
+    error_message TEXT,
+    new_articles_count INTEGER DEFAULT 0,
+    refreshed_articles_count INTEGER DEFAULT 0,
+    trends_found_count INTEGER DEFAULT 0,
+    summary JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_cron_run_logs_website_id ON cron_run_logs(website_id);
+  CREATE INDEX IF NOT EXISTS idx_cron_run_logs_started_at ON cron_run_logs(started_at DESC);
+`;
+
+async function logRun(summary) {
+  try {
+    await query(ENSURE_TABLE_SQL);
+    await query(
+      `INSERT INTO cron_run_logs
+        (website_id, started_at, finished_at, success, error_message,
+         new_articles_count, refreshed_articles_count, trends_found_count, summary)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        summary.website_id,
+        summary.started_at,
+        summary.finished_at,
+        !summary.error,
+        summary.error,
+        summary.auto_generate?.succeeded ?? 0,
+        summary.refresh_stale?.updated ?? 0,
+        summary.trend_search?.saved_count ?? 0,
+        JSON.stringify(summary),
+      ]
+    );
+  } catch (logError) {
+    // Logging failures must never take down the actual cron run.
+    console.error("[cron/daily-articles] Failed to write run log:", logError);
+  }
+}
 
 // Daily cron entry point: trend-search (find new trending celebrities) then
 // auto-generate-articles (write + publish up to DAILY_ARTICLE_LIMIT of them).
@@ -130,6 +178,8 @@ export async function GET(request) {
 
   summary.finished_at = new Date().toISOString();
   console.log("[cron/daily-articles] Summary:", JSON.stringify(summary));
+
+  await logRun(summary);
 
   return NextResponse.json(summary, {
     status: summary.error ? 500 : 200,
