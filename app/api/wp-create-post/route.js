@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { isAuthorized } from "@/lib/cronAuth";
+import { searchCelebrityUrl } from "@/lib/duplicateCheck";
 
 // WordPress Configuration
 const WP_BASE =
@@ -351,6 +352,18 @@ export async function GET(request) {
     const focusKeyword = `${title} religion`.trim();
     const slugVal = slugify(focusKeyword);
 
+    // Final safety net: re-check for an existing article right here at the
+    // actual publish gate, not just earlier in trend-search. This is what
+    // was missing during the 2026-08-11 incident - a stale/unvalidated
+    // queue entry reached this point and published live as a true
+    // duplicate. If this check finds a match, publish as a draft instead
+    // of live, so a human can review/discard it rather than it going out
+    // to search engines and readers.
+    const duplicateUrl = await searchCelebrityUrl(title);
+    if (duplicateUrl) {
+      console.warn(`⚠️ Duplicate detected at publish time for "${title}" - existing article: ${duplicateUrl}. Publishing as draft instead of live.`);
+    }
+
     const rawContent = postContent || "";
     const isHtml = /<\s*[a-zA-Z][^>]*>/.test(rawContent);
     let contentHtml = rawContent;
@@ -514,7 +527,7 @@ export async function GET(request) {
     const postPayload = {
       title: seoTitle,
       content: postContentFinal,
-      status: "published",
+      status: duplicateUrl ? "draft" : "publish",
       slug: slugVal,
       author: 2,
       featured_media: mediaId, // Required - post will not be created without it
@@ -646,6 +659,9 @@ export async function GET(request) {
     return NextResponse.json({
       status: "success",
       post_id: postId,
+      is_likely_duplicate: Boolean(duplicateUrl),
+      duplicate_of: duplicateUrl || null,
+      wp_post_status: duplicateUrl ? "draft" : "publish",
       rank_math_meta_saved: rankMathMetaSaved,
       internal_links: internalLinks,
       media_id: mediaId || null,
@@ -700,6 +716,18 @@ export async function POST(request) {
     const title = keyword.trim();
     const focusKeyword = `${title} religion`.trim();
     const slugVal = slugify(focusKeyword);
+
+    // Final safety net: re-check for an existing article right here at the
+    // actual publish gate, not just earlier in trend-search. This is what
+    // was missing during the 2026-08-11 incident - a stale/unvalidated
+    // queue entry reached this point and published live as a true
+    // duplicate. If this check finds a match, publish as a draft instead
+    // of live, so a human can review/discard it rather than it going out
+    // to search engines and readers.
+    const duplicateUrl = await searchCelebrityUrl(title);
+    if (duplicateUrl) {
+      console.warn(`⚠️ Duplicate detected at publish time for "${title}" - existing article: ${duplicateUrl}. Publishing as draft instead of live.`);
+    }
 
     const rawContent = postContent || "";
     const isHtml = /<\s*[a-zA-Z][^>]*>/.test(rawContent);
@@ -864,7 +892,7 @@ export async function POST(request) {
     const postPayload = {
       title: seoTitle,
       content: postContentFinal,
-      status: "publish",
+      status: duplicateUrl ? "draft" : "publish",
       slug: slugVal,
       author: 2,
       featured_media: mediaId, // Required - post will not be created without it
@@ -996,6 +1024,9 @@ export async function POST(request) {
     return NextResponse.json({
       status: "success",
       post_id: postId,
+      is_likely_duplicate: Boolean(duplicateUrl),
+      duplicate_of: duplicateUrl || null,
+      wp_post_status: duplicateUrl ? "draft" : "publish",
       rank_math_meta_saved: rankMathMetaSaved,
       internal_links: internalLinks,
       media_id: mediaId || null,
