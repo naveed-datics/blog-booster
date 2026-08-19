@@ -7,6 +7,24 @@ const WP_BASE =
 const WP_AUTH_HEADER =
   process.env.WP_AUTH_HEADER || "Basic YWRtaW46YWRtaW5Ad29yazEyMw==";
 
+const SITE_URL = "https://whatreligionisinfo.com/";
+const AUTHOR_BIO_HTML =
+  "<h2>About the Author</h2>" +
+  "<p>Naveed is a Software and AI engineer based in Pakistan and the founder of " +
+  `<a href="${SITE_URL}">whatreligionisinfo.com</a>. ` +
+  "Articles are researched from published interviews, news coverage, and public statements, with sources cited throughout.</p>";
+
+const INTERNAL_LINK_HTML =
+  "<p>If you are interested in learning more about religion, please visit " +
+  `<a href="${SITE_URL}">whatreligionisinfo.com</a>.</p>`;
+
+function appendPostFooter(contentHtml) {
+  if (contentHtml.includes("About the Author")) {
+    return contentHtml;
+  }
+  return contentHtml + INTERNAL_LINK_HTML + AUTHOR_BIO_HTML;
+}
+
 // Helper function to slugify text
 function slugify(s) {
   s = s.trim().toLowerCase();
@@ -235,14 +253,7 @@ export async function GET(request) {
     const slugVal = slugify(focusKeyword);
 
     const rawContent = postContent || "";
-    const isHtml = /<\s*[a-zA-Z][^>]*>/.test(rawContent);
-    let contentHtml = rawContent;
-
-    // Add internal link
-    const internalLink =
-      "<p>If you are interested in learning more about religion, please visit " +
-      '<a href="https://whatreligionisinfo.com/">whatreligionisinfo.com</a>.</p>';
-    contentHtml += internalLink;
+    const contentHtml = appendPostFooter(rawContent);
 
     const celebrityName = title;
 
@@ -562,14 +573,7 @@ export async function POST(request) {
     const slugVal = slugify(focusKeyword);
 
     const rawContent = postContent || "";
-    const isHtml = /<\s*[a-zA-Z][^>]*>/.test(rawContent);
-    let contentHtml = rawContent;
-
-    // Add internal link
-    const internalLink =
-      "<p>If you are interested in learning more about religion, please visit " +
-      '<a href="https://whatreligionisinfo.com/">whatreligionisinfo.com</a>.</p>';
-    contentHtml += internalLink;
+    const contentHtml = appendPostFooter(rawContent);
 
     const celebrityName = title;
 
