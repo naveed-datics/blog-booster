@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { isAuthorized } from "@/lib/cronAuth";
 
 // Helper function to get base URL from request
 function getBaseUrl(request) {
@@ -52,8 +52,7 @@ function createSSEStream(stepsCallback) {
 export async function POST(request) {
   try {
     // Check authentication
-    const session = await auth();
-    if (!session || !session.user) {
+    if (!(await isAuthorized(request))) {
       return NextResponse.json(
         { error: "Unauthorized" },
         { status: 401 }
@@ -76,7 +75,10 @@ export async function POST(request) {
 
     // Get cookies from the original request to pass to internal API calls
     const cookies = request.headers.get("cookie") || "";
-    
+    // Forward the cron secret too, so this works when called by the daily
+    // cron pipeline (no browser session cookie present in that case).
+    const cronSecret = request.headers.get("x-cron-secret") || "";
+
     console.log(`[Generate Article] Using base URL: ${baseUrl} for celebrity: ${celebrityName}`);
 
     // Check if client wants streaming (SSE)
@@ -93,6 +95,7 @@ export async function POST(request) {
         {
           headers: {
             Cookie: cookies,
+            "x-cron-secret": cronSecret,
           },
         }
       );
@@ -119,6 +122,7 @@ export async function POST(request) {
         {
           headers: {
             Cookie: cookies,
+            "x-cron-secret": cronSecret,
           },
         }
       );
@@ -138,12 +142,11 @@ export async function POST(request) {
       const sourcesData = await findSourcesResponse.json();
       steps.push({ step: "Found sources", status: "completed", data: sourcesData });
 
-      // Extract URLs from sources
-      const urls = [
-        sourcesData.wikipedia,
-        sourcesData.religionURL,
-        sourcesData.religion,
-      ].filter(Boolean);
+      // Extract URLs from sources (find-sources now returns up to 6
+      // quality-filtered, domain-diverse sources instead of just 3)
+      const urls = Array.isArray(sourcesData.sources) && sourcesData.sources.length > 0
+        ? sourcesData.sources.filter(Boolean)
+        : [sourcesData.wikipedia, sourcesData.religionURL, sourcesData.religion].filter(Boolean);
 
       // Step 3: Fetch Content from all URLs
       if (urls.length > 0) {
@@ -153,6 +156,7 @@ export async function POST(request) {
           headers: { 
             "Content-Type": "application/json",
             Cookie: cookies,
+            "x-cron-secret": cronSecret,
           },
           body: JSON.stringify({ urls }),
         });
@@ -190,6 +194,7 @@ export async function POST(request) {
             headers: { 
               "Content-Type": "text/plain",
               Cookie: cookies,
+            "x-cron-secret": cronSecret,
             },
             body: combinedContent,
           });
@@ -210,6 +215,7 @@ export async function POST(request) {
               headers: { 
                 "Content-Type": "application/json",
                 Cookie: cookies,
+            "x-cron-secret": cronSecret,
               },
               body: JSON.stringify({
                 html: blogData.blog_post.content,
@@ -240,6 +246,7 @@ export async function POST(request) {
               headers: {
                 "Content-Type": "application/json",
                 Cookie: cookies,
+            "x-cron-secret": cronSecret,
               },
               body: JSON.stringify({
                 post_content: humanizedContent,
@@ -276,6 +283,7 @@ export async function POST(request) {
                   headers: { 
                     "Content-Type": "application/json",
                     Cookie: cookies,
+            "x-cron-secret": cronSecret,
                   },
                   body: JSON.stringify({
                     website_id: parseInt(websiteId),

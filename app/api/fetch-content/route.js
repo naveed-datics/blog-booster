@@ -1,12 +1,11 @@
 import { NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
+import { isAuthorized } from '@/lib/cronAuth';
 
 // POST endpoint to fetch content from multiple URLs
 export async function POST(request) {
   try {
     // Check authentication
-    const session = await auth();
-    if (!session || !session.user) {
+    if (!(await isAuthorized(request))) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }
@@ -23,10 +22,10 @@ export async function POST(request) {
       );
     }
 
-    // Limit to maximum 3 URLs
-    if (urls.length > 3) {
+    // Limit to maximum 6 URLs (matches find-sources' MAX_SOURCES)
+    if (urls.length > 6) {
       return NextResponse.json(
-        { error: 'Maximum 3 URLs allowed' },
+        { error: 'Maximum 6 URLs allowed' },
         { status: 400 }
       );
     }
@@ -152,8 +151,7 @@ export async function POST(request) {
 export async function GET(request) {
   try {
     // Check authentication
-    const session = await auth();
-    if (!session || !session.user) {
+    if (!(await isAuthorized(request))) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }

@@ -12,6 +12,7 @@
     "migrate:niche": "node lib/migrations/run-niche-migration.mjs",
     "migrate:trend-website": "node lib/migrations/run-website-id-migration.mjs",
     "migrate:gsc": "node lib/migrations/run-gsc-migration.mjs",
+    "migrate:cron-logs": "node lib/migrations/run-cron-run-logs-migration.mjs",
     "test:gpt": "node test-gpt4.1.mjs"
   },
   "dependencies": {

@@ -71,7 +71,10 @@ export default function AIDashboardPage() {
   const [pendingCreateArticle, setPendingCreateArticle] = useState(null); // { keyword, url }
   const [createArticleSearching, setCreateArticleSearching] = useState(false);
   const [createArticleDeleting, setCreateArticleDeleting] = useState(false);
-  
+  const [cronLogs, setCronLogs] = useState([]);
+  const [cronLogsLoading, setCronLogsLoading] = useState(false);
+  const [expandedLogId, setExpandedLogId] = useState(null);
+
   // Ref to hold handleGenerateArticle to avoid circular dependency
   const handleGenerateArticleRef = useRef(null);
 
@@ -82,6 +85,30 @@ export default function AIDashboardPage() {
       fetchWebsiteData();
     }
   }, [status, websiteId, router]);
+
+  const fetchCronLogs = useCallback(async () => {
+    if (!websiteId) return;
+    setCronLogsLoading(true);
+    try {
+      const res = await fetch(`/api/cron-logs?website_id=${websiteId}&limit=30`);
+      const data = await res.json();
+      if (res.ok) {
+        setCronLogs(data.logs || []);
+      } else {
+        toast.error(data.error || "Failed to load cron logs");
+      }
+    } catch (err) {
+      toast.error("Failed to load cron logs");
+    } finally {
+      setCronLogsLoading(false);
+    }
+  }, [websiteId]);
+
+  useEffect(() => {
+    if (status === "authenticated" && websiteId) {
+      fetchCronLogs();
+    }
+  }, [status, websiteId, fetchCronLogs]);
 
   // Automation Logic: Trigger fetchTrends automatically if time matches
   useEffect(() => {
@@ -967,6 +994,7 @@ export default function AIDashboardPage() {
               <TabsTrigger value="processing">Processing</TabsTrigger>
               <TabsTrigger value="update">Update</TabsTrigger>
               <TabsTrigger value="complete">Complete</TabsTrigger>
+              <TabsTrigger value="cron-logs">Cron Logs</TabsTrigger>
             </TabsList>
 
             <TabsContent value="processing">
@@ -1194,7 +1222,16 @@ export default function AIDashboardPage() {
                               )}
                             </TableCell>
                             <TableCell className="text-right">
-                              <div className="flex justify-end">
+                              <div className="flex justify-end gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleDeleteTrend(trend.id)}
+                                  className="flex items-center gap-1 text-red-600 border-red-200 hover:bg-red-50 dark:hover:bg-red-900/20"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                  Delete
+                                </Button>
                                 <Button
                                   variant="outline"
                                   size="sm"
@@ -1265,9 +1302,8 @@ export default function AIDashboardPage() {
                           <TableHead>Keyword</TableHead>
                           <TableHead>Status</TableHead>
                           <TableHead>Date</TableHead>
-                          <TableHead className="text-right">
-                            Wordpress URL
-                          </TableHead>
+                          <TableHead>Wordpress URL</TableHead>
+                          <TableHead className="text-right">Action</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -1279,9 +1315,32 @@ export default function AIDashboardPage() {
                               </span>
                             </TableCell>
                             <TableCell>
-                              <span className="px-2 py-1 text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300 rounded">
-                                Completed
-                              </span>
+                              {(() => {
+                                const urlData = celebrityUrls[trend.celebrity_name];
+                                const trendDate = new Date(trend.created_at);
+                                const lastmodDate = urlData.lastmod
+                                  ? new Date(urlData.lastmod)
+                                  : null;
+                                // If the post was last modified on/around when
+                                // this trend surfaced, it was created fresh for
+                                // this trend. If it was already modified well
+                                // before, this trend just matched a
+                                // pre-existing article via the duplicate check.
+                                const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+                                const isNew =
+                                  !lastmodDate ||
+                                  lastmodDate.getTime() >= trendDate.getTime() - ONE_DAY_MS;
+
+                                return isNew ? (
+                                  <span className="px-2 py-1 text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300 rounded">
+                                    Completed - New
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-1 text-xs font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-300 rounded">
+                                    Completed - Old
+                                  </span>
+                                );
+                              })()}
                             </TableCell>
                             <TableCell>
                               {new Date(trend.created_at).toLocaleDateString(
@@ -1293,8 +1352,8 @@ export default function AIDashboardPage() {
                                 }
                               )}
                             </TableCell>
-                            <TableCell className="text-right">
-                              <div className="flex justify-end">
+                            <TableCell>
+                              <div className="flex justify-start">
                                 <a
                                   href={celebrityUrls[trend.celebrity_name].url}
                                   target="_blank"
@@ -1306,6 +1365,19 @@ export default function AIDashboardPage() {
                                 </a>
                               </div>
                             </TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex justify-end">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleDeleteTrend(trend.id)}
+                                  className="flex items-center gap-1 text-red-600 border-red-200 hover:bg-red-50 dark:hover:bg-red-900/20"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                  Delete
+                                </Button>
+                              </div>
+                            </TableCell>
                           </TableRow>
                         ))}
                       </TableBody>
@@ -1313,6 +1385,93 @@ export default function AIDashboardPage() {
                   </div>
                 );
               })()}
+            </TabsContent>
+
+            <TabsContent value="cron-logs">
+              <div className="flex justify-between items-center mb-3">
+                <p className="text-sm text-muted-foreground">
+                  Results from each daily cron run (trend search, article generation, stale-article refresh).
+                </p>
+                <Button
+                  onClick={fetchCronLogs}
+                  disabled={cronLogsLoading}
+                  variant="outline"
+                  size="sm"
+                  className="flex items-center gap-2"
+                >
+                  <RefreshCw className={`h-4 w-4 ${cronLogsLoading ? "animate-spin" : ""}`} />
+                  Refresh
+                </Button>
+              </div>
+
+              {cronLogs.length === 0 ? (
+                <div className="text-center py-10 text-muted-foreground text-sm">
+                  {cronLogsLoading ? "Loading..." : "No cron runs logged yet."}
+                </div>
+              ) : (
+                <div className="border rounded-md overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Run (started)</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>New Articles</TableHead>
+                        <TableHead>Refreshed</TableHead>
+                        <TableHead>Trends Found</TableHead>
+                        <TableHead></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {cronLogs.map((log) => (
+                        <>
+                          <TableRow key={log.id}>
+                            <TableCell className="whitespace-nowrap">
+                              {new Date(log.started_at).toLocaleString()}
+                            </TableCell>
+                            <TableCell>
+                              {log.success ? (
+                                <span className="text-green-600 font-medium">Success</span>
+                              ) : (
+                                <span className="text-red-600 font-medium">Error</span>
+                              )}
+                            </TableCell>
+                            <TableCell>{log.new_articles_count}</TableCell>
+                            <TableCell>{log.refreshed_articles_count}</TableCell>
+                            <TableCell>{log.trends_found_count}</TableCell>
+                            <TableCell>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() =>
+                                  setExpandedLogId(
+                                    expandedLogId === log.id ? null : log.id
+                                  )
+                                }
+                              >
+                                {expandedLogId === log.id ? "Hide" : "Details"}
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                          {expandedLogId === log.id && (
+                            <TableRow key={`${log.id}-details`}>
+                              <TableCell colSpan={6}>
+                                {log.error_message && (
+                                  <p className="text-sm text-red-600 mb-2">
+                                    {log.error_message}
+                                  </p>
+                                )}
+                                <pre className="text-xs bg-muted p-3 rounded-md overflow-x-auto whitespace-pre-wrap">
+                                  {JSON.stringify(log.summary, null, 2)}
+                                </pre>
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
             </TabsContent>
           </Tabs>
           {trendingList.length > 25 && (

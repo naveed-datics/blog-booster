@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { query } from '@/lib/db';
+import { searchCelebrityUrl } from '@/lib/duplicateCheck';
 
 // Helper function to get rising trends using SerpAPI (equivalent to get_rising_trends)
 async function getRisingTrends(searchQuery = 'religion') {
@@ -73,25 +74,9 @@ async function getRisingTrends(searchQuery = 'religion') {
   }
 }
 
-// Helper function to search for celebrity URL (equivalent to search_celebrity_url)
-async function searchCelebrityUrl(celebrity) {
-  try {
-    // This is a placeholder - implement your actual WordPress/URL search logic
-    // For now, return a mock URL or search Google
-    const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(celebrity)}`;
-    
-    // In production, you would:
-    // 1. Search your WordPress database
-    // 2. Search a specific website
-    // 3. Use a search API
-    
-    // For now, return null or a placeholder
-    return null;
-  } catch (error) {
-    console.error(`Error searching for ${celebrity}:`, error);
-    return null;
-  }
-}
+// searchCelebrityUrl() now lives in @/lib/duplicateCheck (imported above),
+// shared with the one-time backfill route so both use identical matching
+// logic and can never drift apart.
 
 // Helper function to save trends to database
 async function saveTrendsToDatabase(searchQuery, trendsResult, celebList, results, websiteId = null) {
@@ -144,6 +129,26 @@ async function saveTrendsToDatabase(searchQuery, trendsResult, celebList, result
       
       // Check if name is valid
       const lowerName = cleanCelebName.toLowerCase();
+      const nameWords = lowerName.split(/\s+/).filter(Boolean);
+      const firstWord = nameWords[0] || '';
+      const lastWord = nameWords[nameWords.length - 1] || '';
+      // Question-fragment terms like "Is Christianity A" or "What Was The
+      // First" pass the exact-match invalidTerms check (the FULL string
+      // isn't in the list) but are still obviously not a person's name.
+      // Catches this by checking the first/last word instead of the whole
+      // string - real names essentially never start with a question word
+      // or end with a dangling article/preposition.
+      const FRAGMENT_START_WORDS = new Set([
+        'is', 'are', 'was', 'were', 'what', 'who', 'where', 'when', 'why',
+        'how', 'which', 'the', 'a', 'an', 'que', 'el', 'la', 'los', 'las',
+        'blog', 'cartula', 'does', 'do', 'can', 'should', 'will',
+      ]);
+      const FRAGMENT_END_WORDS = new Set([
+        'of', 'a', 'an', 'the', 'de', 'la', 'el', 'del', 'que', 'to', 'for',
+        'and', 'or', 'in', 'on', 'at',
+      ]);
+      const isFragment = FRAGMENT_START_WORDS.has(firstWord) || FRAGMENT_END_WORDS.has(lastWord);
+
       const isInvalid = invalidTerms.includes(lowerName) ||
         lowerName.includes('religion') ||
         lowerName.includes('jeans') ||
@@ -153,6 +158,7 @@ async function saveTrendsToDatabase(searchQuery, trendsResult, celebList, result
         lowerName.includes('what religion') ||
         lowerName.includes('whoever') ||
         lowerName.includes('main religion') ||
+        isFragment ||
         lowerName.length < 3; // Minimum 3 characters
       
       // Require at least two words (first + last name) to reduce generic single-word terms
@@ -350,16 +356,34 @@ IMPORTANT:
           
           // Filter out obvious non-celebrities
           const lowerName = cleanName.toLowerCase();
+          const nameWords = lowerName.split(/\s+/).filter(Boolean);
+          const firstWord = nameWords[0] || '';
+          const lastWord = nameWords[nameWords.length - 1] || '';
+          // See the matching comment in saveTrendsToDatabase() above -
+          // question-fragment terms like "Is Christianity A" pass the
+          // exact-match invalidTerms check but aren't a person's name.
+          const FRAGMENT_START_WORDS = new Set([
+            'is', 'are', 'was', 'were', 'what', 'who', 'where', 'when', 'why',
+            'how', 'which', 'the', 'a', 'an', 'que', 'el', 'la', 'los', 'las',
+            'blog', 'cartula', 'does', 'do', 'can', 'should', 'will',
+          ]);
+          const FRAGMENT_END_WORDS = new Set([
+            'of', 'a', 'an', 'the', 'de', 'la', 'el', 'del', 'que', 'to', 'for',
+            'and', 'or', 'in', 'on', 'at',
+          ]);
+          const isFragment = FRAGMENT_START_WORDS.has(firstWord) || FRAGMENT_END_WORDS.has(lastWord);
+
           const isInvalid = invalidTerms.includes(lowerName) ||
-            lowerName.includes('religion') || 
-            lowerName.includes('jeans') || 
+            lowerName.includes('religion') ||
+            lowerName.includes('jeans') ||
             lowerName.includes('breakout') ||
             lowerName.includes('true religion') ||
             lowerName.includes('what is') ||
             lowerName.includes('what religion') ||
             lowerName.includes('main religion') ||
-            lowerName.includes('whoever');
-          
+            lowerName.includes('whoever') ||
+            isFragment;
+
           if (isInvalid) {
             return null;
           }
@@ -448,9 +472,8 @@ function extractNamesFromTrends(formattedTrends) {
 
 export async function GET(request) {
   try {
-    const { auth } = await import('@/lib/auth');
-    const session = await auth();
-    if (!session || !session.user) {
+    const { isAuthorized } = await import('@/lib/cronAuth');
+    if (!(await isAuthorized(request))) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }

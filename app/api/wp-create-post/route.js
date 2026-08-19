@@ -1,11 +1,130 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { isAuthorized } from "@/lib/cronAuth";
+import { searchCelebrityUrl } from "@/lib/duplicateCheck";
 
 // WordPress Configuration
 const WP_BASE =
   process.env.WP_BASE_URL || "https://whatreligionisinfo.com/wp-json/wp/v2";
-const WP_AUTH_HEADER =
-  process.env.WP_AUTH_HEADER || "Basic YWRtaW46YWRtaW5Ad29yazEyMw==";
+if (!process.env.WP_AUTH_HEADER) {
+  throw new Error(
+    "WP_AUTH_HEADER environment variable is not set. Refusing to fall back to a hardcoded credential."
+  );
+}
+const WP_AUTH_HEADER = process.env.WP_AUTH_HEADER;
+
+// The standard WP REST `meta` field on POST /posts silently does NOT
+// persist Rank Math's SEO fields (rank_math_title, rank_math_description,
+// rank_math_focus_keyword) - verified directly: setting them via the
+// normal post-creation payload has no effect on the rendered <title> tag
+// or meta description, with no error either, so this failure is invisible
+// unless checked. Rank Math exposes its own dedicated endpoint that
+// actually writes to the right underlying storage - confirmed working via
+// a live test (including its %sep%/%sitename% variable substitution).
+async function setRankMathMeta(postId, { title, description, focusKeyword }) {
+  try {
+    const res = await fetch(`${WP_BASE.replace(/\/wp\/v2$/, "")}/rankmath/v1/updateMeta`, {
+      method: "POST",
+      headers: { Authorization: WP_AUTH_HEADER, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        objectType: "post",
+        objectID: postId,
+        meta: {
+          rank_math_title: title,
+          rank_math_description: description,
+          rank_math_focus_keyword: focusKeyword,
+        },
+      }),
+    });
+    if (!res.ok) {
+      console.error(`Rank Math updateMeta failed for post ${postId}: ${res.status} ${await res.text()}`);
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error(`Rank Math updateMeta error for post ${postId}:`, error);
+    return false; // non-fatal - the post itself is already created successfully
+  }
+}
+
+// Adds internal links in BOTH directions between the new post and a small
+// random sample of existing posts:
+//   - outbound: a "Related Reading" section appended to the new post,
+//     linking OUT to existing posts (topical relevance, better UX)
+//   - inbound: a short sentence appended to those existing posts, linking
+//     back to the new post
+// The inbound direction is the one that actually matters most for
+// indexing: a brand-new page with zero inbound internal links is exactly
+// the kind of page that sits un-indexed, since Google discovers and
+// prioritizes crawling pages it can reach via links from pages it already
+// knows about. Random sampling (rather than always the same "most recent"
+// posts) spreads link equity around instead of concentrating it on
+// whichever posts happen to be newest at any given time.
+async function addInternalLinks(postId, postTitle, postLink, currentContent) {
+  const result = { outbound: false, inbound: 0, linked_to: [] };
+
+  try {
+    const poolRes = await fetch(
+      `${WP_BASE}/posts?orderby=date&order=desc&per_page=30&exclude=${postId}&_fields=id,slug,title,link`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+    if (!poolRes.ok) return result;
+
+    const pool = await poolRes.json();
+    if (!Array.isArray(pool) || pool.length === 0) return result;
+
+    const chosen = [...pool].sort(() => Math.random() - 0.5).slice(0, Math.min(2, pool.length));
+
+    // Outbound: append a Related Reading section to the new post.
+    const outboundItems = chosen
+      .map((p) => `<li><a href="${p.link}">${p.title.rendered}</a></li>`)
+      .join("\n");
+    const withRelated = `${currentContent}\n\n<h2>Related Reading</h2>\n<ul>\n${outboundItems}\n</ul>`;
+
+    const outboundRes = await fetch(`${WP_BASE}/posts/${postId}`, {
+      method: "POST",
+      headers: { Authorization: WP_AUTH_HEADER, "Content-Type": "application/json" },
+      body: JSON.stringify({ content: withRelated }),
+    });
+    result.outbound = outboundRes.ok;
+    if (!outboundRes.ok) {
+      console.error(`Failed to add outbound links to post ${postId}: ${outboundRes.status}`);
+    }
+
+    // Inbound: append a short linking sentence to each chosen existing post.
+    for (const p of chosen) {
+      try {
+        const fullRes = await fetch(`${WP_BASE}/posts/${p.id}?_fields=content`, {
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!fullRes.ok) continue;
+
+        const fullData = await fullRes.json();
+        const inboundSentence = `\n\n<p>You might also be interested in <a href="${postLink}">${postTitle}</a>.</p>`;
+        const updatedContent = fullData.content.rendered + inboundSentence;
+
+        const inboundRes = await fetch(`${WP_BASE}/posts/${p.id}`, {
+          method: "POST",
+          headers: { Authorization: WP_AUTH_HEADER, "Content-Type": "application/json" },
+          body: JSON.stringify({ content: updatedContent }),
+        });
+
+        if (inboundRes.ok) {
+          result.inbound++;
+          result.linked_to.push(p.link);
+        } else {
+          console.error(`Failed to add inbound link to post ${p.id}: ${inboundRes.status}`);
+        }
+      } catch (error) {
+        console.error(`Error adding inbound link to post ${p.id}:`, error);
+      }
+    }
+
+    return result;
+  } catch (error) {
+    console.error("Error adding internal links:", error);
+    return result; // non-fatal - the post itself is already created successfully
+  }
+}
 
 const SITE_URL = "https://whatreligionisinfo.com/";
 const AUTHOR_BIO_HTML =
@@ -223,8 +342,7 @@ Return only the title text, no quotes, no commentary.`,
 export async function GET(request) {
   try {
     // Check authentication
-    const session = await auth();
-    if (!session || !session.user) {
+    if (!(await isAuthorized(request))) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -252,6 +370,18 @@ export async function GET(request) {
     const focusKeyword = `${title} religion`.trim();
     const slugVal = slugify(focusKeyword);
 
+    // Final safety net: re-check for an existing article right here at the
+    // actual publish gate, not just earlier in trend-search. This is what
+    // was missing during the 2026-08-11 incident - a stale/unvalidated
+    // queue entry reached this point and published live as a true
+    // duplicate. If this check finds a match, publish as a draft instead
+    // of live, so a human can review/discard it rather than it going out
+    // to search engines and readers.
+    const duplicateUrl = await searchCelebrityUrl(title);
+    if (duplicateUrl) {
+      console.warn(`⚠️ Duplicate detected at publish time for "${title}" - existing article: ${duplicateUrl}. Publishing as draft instead of live.`);
+    }
+
     const rawContent = postContent || "";
     const contentHtml = appendPostFooter(rawContent);
 
@@ -272,8 +402,11 @@ export async function GET(request) {
       postContent
     );
 
-    // Combine meta description and content
-    const postContentFinal = metaDescription + "\n\n" + contentHtml;
+    // The meta description is now stored properly via setRankMathMeta()
+    // below (Rank Math's own SEO description field), so it no longer needs
+    // to be duplicated into the visible article body as a leading
+    // paragraph - that read as formulaic/redundant to actual readers.
+    const postContentFinal = contentHtml;
 
     const headersJson = {
       Authorization: WP_AUTH_HEADER,
@@ -405,7 +538,7 @@ export async function GET(request) {
     const postPayload = {
       title: seoTitle,
       content: postContentFinal,
-      status: "published",
+      status: duplicateUrl ? "draft" : "publish",
       slug: slugVal,
       author: 2,
       featured_media: mediaId, // Required - post will not be created without it
@@ -436,6 +569,25 @@ export async function GET(request) {
 
     const postData = await postResponse.json();
     const postId = postData.id;
+
+    // The `meta` field in the postPayload above does NOT actually persist
+    // Rank Math's SEO title/description (see setRankMathMeta comment) -
+    // this is the call that actually works.
+    const rankMathMetaSaved = await setRankMathMeta(postId, {
+      title: seoTitle,
+      description: metaDescription,
+      focusKeyword: focusKeyword,
+    });
+
+    // Add internal links (both directions) between this new post and a
+    // random sample of existing posts - see addInternalLinks() for why
+    // this matters for indexing, not just topical relevance.
+    const internalLinks = await addInternalLinks(
+      postId,
+      seoTitle,
+      postData.link,
+      postContentFinal
+    );
 
     // Verify featured_media was set in the post
     if (
@@ -518,6 +670,11 @@ export async function GET(request) {
     return NextResponse.json({
       status: "success",
       post_id: postId,
+      is_likely_duplicate: Boolean(duplicateUrl),
+      duplicate_of: duplicateUrl || null,
+      wp_post_status: duplicateUrl ? "draft" : "publish",
+      rank_math_meta_saved: rankMathMetaSaved,
+      internal_links: internalLinks,
       media_id: mediaId || null,
       message: mediaId
         ? `Post ID ${postId} created with featured image ID ${mediaId}`
@@ -543,8 +700,7 @@ export async function GET(request) {
 export async function POST(request) {
   try {
     // Check authentication
-    const session = await auth();
-    if (!session || !session.user) {
+    if (!(await isAuthorized(request))) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -572,6 +728,18 @@ export async function POST(request) {
     const focusKeyword = `${title} religion`.trim();
     const slugVal = slugify(focusKeyword);
 
+    // Final safety net: re-check for an existing article right here at the
+    // actual publish gate, not just earlier in trend-search. This is what
+    // was missing during the 2026-08-11 incident - a stale/unvalidated
+    // queue entry reached this point and published live as a true
+    // duplicate. If this check finds a match, publish as a draft instead
+    // of live, so a human can review/discard it rather than it going out
+    // to search engines and readers.
+    const duplicateUrl = await searchCelebrityUrl(title);
+    if (duplicateUrl) {
+      console.warn(`⚠️ Duplicate detected at publish time for "${title}" - existing article: ${duplicateUrl}. Publishing as draft instead of live.`);
+    }
+
     const rawContent = postContent || "";
     const contentHtml = appendPostFooter(rawContent);
 
@@ -592,8 +760,11 @@ export async function POST(request) {
       postContent
     );
 
-    // Combine meta description and content
-    const postContentFinal = metaDescription + "\n\n" + contentHtml;
+    // The meta description is now stored properly via setRankMathMeta()
+    // below (Rank Math's own SEO description field), so it no longer needs
+    // to be duplicated into the visible article body as a leading
+    // paragraph - that read as formulaic/redundant to actual readers.
+    const postContentFinal = contentHtml;
 
     const headersJson = {
       Authorization: WP_AUTH_HEADER,
@@ -725,7 +896,7 @@ export async function POST(request) {
     const postPayload = {
       title: seoTitle,
       content: postContentFinal,
-      status: "publish",
+      status: duplicateUrl ? "draft" : "publish",
       slug: slugVal,
       author: 2,
       featured_media: mediaId, // Required - post will not be created without it
@@ -756,6 +927,25 @@ export async function POST(request) {
 
     const postData = await postResponse.json();
     const postId = postData.id;
+
+    // The `meta` field in the postPayload above does NOT actually persist
+    // Rank Math's SEO title/description (see setRankMathMeta comment) -
+    // this is the call that actually works.
+    const rankMathMetaSaved = await setRankMathMeta(postId, {
+      title: seoTitle,
+      description: metaDescription,
+      focusKeyword: focusKeyword,
+    });
+
+    // Add internal links (both directions) between this new post and a
+    // random sample of existing posts - see addInternalLinks() for why
+    // this matters for indexing, not just topical relevance.
+    const internalLinks = await addInternalLinks(
+      postId,
+      seoTitle,
+      postData.link,
+      postContentFinal
+    );
 
     // Verify featured_media was set in the post
     if (
@@ -838,6 +1028,11 @@ export async function POST(request) {
     return NextResponse.json({
       status: "success",
       post_id: postId,
+      is_likely_duplicate: Boolean(duplicateUrl),
+      duplicate_of: duplicateUrl || null,
+      wp_post_status: duplicateUrl ? "draft" : "publish",
+      rank_math_meta_saved: rankMathMetaSaved,
+      internal_links: internalLinks,
       media_id: mediaId || null,
       message: mediaId
         ? `Post ID ${postId} created with featured image ID ${mediaId}`
