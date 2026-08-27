@@ -20,8 +20,15 @@ export async function GET(request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const { searchParams } = new URL(request.url);
+  const force = searchParams.get("force") === "1";
+  const limitParam = parseInt(searchParams.get("limit") || "", 10);
+  const limit = Number.isFinite(limitParam) && limitParam > 0
+    ? Math.min(limitParam, 10)
+    : PUBLISH_RETRY_LIMIT;
+
   const baseUrl = getCronBaseUrl();
-  const claimed = await claimDueDrafts(PUBLISH_RETRY_LIMIT);
+  const claimed = await claimDueDrafts(limit, { ignoreRetryAfter: force });
   const results = [];
 
   for (const draft of claimed) {

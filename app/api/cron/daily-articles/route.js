@@ -117,6 +117,7 @@ export async function GET(request) {
     website_id: TARGET_WEBSITE_ID,
     trend_search: null,
     auto_generate: null,
+    retry_publish: null,
     refresh_stale: null,
     error: null,
   };
@@ -168,6 +169,34 @@ export async function GET(request) {
       }
     } else {
       summary.auto_generate = await parseJsonOrThrow(autoGenResponse, "auto-generate-articles");
+    }
+
+    // Hobby allows only daily crons, so retry WordPress-only publishes here
+    // as well as at 06:00 UTC. force=1 ignores retry_after so drafts that
+    // just failed during generate get a second WP attempt without waiting.
+    const retryResponse = await fetch(
+      `${baseUrl}/api/cron/retry-publish?force=1&limit=5`,
+      { headers: { Authorization: `Bearer ${cronSecret}` } }
+    );
+    if (!retryResponse.ok) {
+      const errorText = await retryResponse.text();
+      if (isInvocationTimeout(retryResponse.status, errorText)) {
+        summary.retry_publish = {
+          timeout: true,
+          error: errorText.substring(0, 300),
+        };
+      } else {
+        console.error(
+          "[cron/daily-articles] retry-publish failed:",
+          retryResponse.status,
+          errorText.substring(0, 300)
+        );
+        summary.retry_publish = {
+          error: `${retryResponse.status} ${errorText.substring(0, 300)}`,
+        };
+      }
+    } else {
+      summary.retry_publish = await parseJsonOrThrow(retryResponse, "retry-publish");
     }
 
     // Step 3: refresh existing articles that are both currently trending
