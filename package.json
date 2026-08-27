@@ -13,6 +13,8 @@
     "migrate:trend-website": "node lib/migrations/run-website-id-migration.mjs",
     "migrate:gsc": "node lib/migrations/run-gsc-migration.mjs",
     "migrate:cron-logs": "node lib/migrations/run-cron-run-logs-migration.mjs",
+    "migrate:article-drafts": "node lib/migrations/run-article-drafts-migration.mjs",
+    "test": "node --test lib/*.test.js",
     "test:gpt": "node test-gpt4.1.mjs"
   },
   "dependencies": {

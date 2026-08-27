@@ -1,9 +1,22 @@
 import { NextResponse } from "next/server";
 import { isAuthorized } from "@/lib/cronAuth";
+import {
+  findTrendIdForCelebrity,
+  markPublished,
+  saveDraft,
+  schedulePublishRetry,
+} from "@/lib/articleDrafts";
+import { getCronBaseUrl } from "@/lib/productionBaseUrl";
 
-// Helper function to get base URL from request
+export const maxDuration = 300;
+
 function getBaseUrl(request) {
-  // Try to get from request headers first (for internal calls)
+  const cronSecret = process.env.CRON_SECRET;
+  const providedSecret = request.headers.get("x-cron-secret");
+  if (cronSecret && providedSecret && providedSecret === cronSecret) {
+    return getCronBaseUrl();
+  }
+
   const host = request.headers.get("host");
   const protocol = request.headers.get("x-forwarded-proto") || 
                    (request.headers.get("x-forwarded-ssl") === "on" ? "https" : "http");
@@ -12,7 +25,6 @@ function getBaseUrl(request) {
     return `${protocol}://${host}`;
   }
   
-  // Fallback to environment variables
   if (process.env.NEXT_PUBLIC_BASE_URL) {
     return process.env.NEXT_PUBLIC_BASE_URL;
   }
@@ -60,7 +72,7 @@ export async function POST(request) {
     }
 
     const body = await request.json();
-    const { celebrityName, websiteId } = body;
+    const { celebrityName, websiteId, trendId: requestedTrendId } = body;
 
     if (!celebrityName || !celebrityName.trim()) {
       return NextResponse.json(
@@ -72,6 +84,9 @@ export async function POST(request) {
     const baseUrl = getBaseUrl(request);
     const steps = [];
     let finalResult = null;
+    let deferredPublish = false;
+    let draftSaved = false;
+    let pipelineTrendId = requestedTrendId || null;
 
     // Get cookies from the original request to pass to internal API calls
     const cookies = request.headers.get("cookie") || "";
@@ -237,6 +252,37 @@ export async function POST(request) {
 
             const humanizedContent = humanizedData.humanized_html || blogData.blog_post.content;
 
+            // Persist the finished article before WordPress so a 504/500
+            // on media or post create can retry publish without re-running
+            // image search, sources, write-blog, or humanize.
+            if (websiteId) {
+              try {
+                pipelineTrendId =
+                  requestedTrendId ||
+                  (await findTrendIdForCelebrity(websiteId, celebrityName));
+                const saved = await saveDraft({
+                  websiteId,
+                  celebrityName,
+                  trendId: pipelineTrendId,
+                  draftHtml: humanizedContent,
+                  draftTitle: blogData.blog_post.title || celebrityName,
+                  imageUrl: imageData.url || null,
+                });
+                draftSaved = Boolean(saved);
+                steps.push({
+                  step: "Draft saved for publish retry",
+                  status: "completed",
+                });
+              } catch (draftError) {
+                console.error("Failed to save article draft:", draftError);
+                steps.push({
+                  step: "Draft save failed",
+                  status: "error",
+                  error: draftError.message,
+                });
+              }
+            }
+
             // Step 6: Create WordPress Post
             steps.push({ step: "Creating WordPress post...", status: "in_progress" });
             // Use POST instead of GET to avoid 431 error with large content
@@ -258,76 +304,114 @@ export async function POST(request) {
             
             if (!wpResponse.ok) {
               const errorText = await wpResponse.text();
+              const wpError = `Failed to create WordPress post: ${wpResponse.status} ${wpResponse.statusText}. ${errorText.substring(0, 200)}`;
               steps.push({
                 step: "WordPress post created",
                 status: "error",
-                error: `Failed to create WordPress post: ${wpResponse.status} ${wpResponse.statusText}. ${errorText.substring(0, 200)}`,
+                error: wpError,
               });
-              throw new Error(`Failed to create WordPress post: ${wpResponse.status} ${wpResponse.statusText}. ${errorText.substring(0, 200)}`);
-            }
-            
-            const wpData = await wpResponse.json();
-            steps.push({
-              step: "WordPress post created",
-              status: wpData.status === "success" ? "completed" : "error",
-              error: wpData.status !== "success" ? (wpData.error || wpData.message || "Unknown error") : undefined,
-              data: wpData,
-            });
-
-            // Step 7: Save WordPress post to database
-            if (wpData.status === "success" && websiteId) {
-              steps.push({ step: "Saving to database...", status: "in_progress" });
-              try {
-                const saveResponse = await fetch(`${baseUrl}/api/wordpress-posts`, {
-                  method: "POST",
-                  headers: { 
-                    "Content-Type": "application/json",
-                    Cookie: cookies,
-            "x-cron-secret": cronSecret,
-                  },
-                  body: JSON.stringify({
-                    website_id: parseInt(websiteId),
-                    celebrity_name: celebrityName,
-                    post_title: wpData.title || blogData.blog_post.title || celebrityName,
-                    post_id: wpData.post_id,
-                    post_url: wpData.slug ? `https://whatreligionisinfo.com/${wpData.slug}/` : null,
-                    image_url: wpData.image_url || imageData.url || null,
-                    content: humanizedContent,
-                    slug: wpData.slug || null,
-                    meta_description: wpData.meta_description || null,
-                  }),
+              if (draftSaved) {
+                await schedulePublishRetry({
+                  websiteId,
+                  celebrityName,
+                  error: wpError,
+                  status: wpResponse.status,
                 });
+                deferredPublish = true;
+              } else {
+                throw new Error(wpError);
+              }
+            } else {
+              const wpData = await wpResponse.json();
+              steps.push({
+                step: "WordPress post created",
+                status: wpData.status === "success" ? "completed" : "error",
+                error: wpData.status !== "success" ? (wpData.error || wpData.message || "Unknown error") : undefined,
+                data: wpData,
+              });
 
-                if (saveResponse.ok) {
-                  const saveData = await saveResponse.json();
-                  steps.push({
-                    step: "Saved to database",
-                    status: "completed",
-                    data: saveData,
-                  });
-                } else {
-                  steps.push({
-                    step: "Database save failed",
-                    status: "error",
-                    error: await saveResponse.text(),
-                  });
+              if (wpData.status === "success") {
+                const postUrl = wpData.slug
+                  ? `https://whatreligionisinfo.com/${wpData.slug}/`
+                  : null;
+
+                if (websiteId) {
+                  try {
+                    await markPublished({
+                      websiteId,
+                      celebrityName,
+                      trendId: pipelineTrendId,
+                      postUrl,
+                    });
+                  } catch (markError) {
+                    console.error("Failed to mark draft published:", markError);
+                  }
                 }
-              } catch (saveError) {
-                steps.push({
-                  step: "Database save error",
-                  status: "error",
-                  error: saveError.message,
+
+                // Step 7: Save WordPress post to database
+                if (websiteId) {
+                  steps.push({ step: "Saving to database...", status: "in_progress" });
+                  try {
+                    const saveResponse = await fetch(`${baseUrl}/api/wordpress-posts`, {
+                      method: "POST",
+                      headers: {
+                        "Content-Type": "application/json",
+                        Cookie: cookies,
+                        "x-cron-secret": cronSecret,
+                      },
+                      body: JSON.stringify({
+                        website_id: parseInt(websiteId),
+                        celebrity_name: celebrityName,
+                        post_title: wpData.title || blogData.blog_post.title || celebrityName,
+                        post_id: wpData.post_id,
+                        post_url: postUrl,
+                        image_url: wpData.image_url || imageData.url || null,
+                        content: humanizedContent,
+                        slug: wpData.slug || null,
+                        meta_description: wpData.meta_description || null,
+                      }),
+                    });
+
+                    if (saveResponse.ok) {
+                      const saveData = await saveResponse.json();
+                      steps.push({
+                        step: "Saved to database",
+                        status: "completed",
+                        data: saveData,
+                      });
+                    } else {
+                      steps.push({
+                        step: "Database save failed",
+                        status: "error",
+                        error: await saveResponse.text(),
+                      });
+                    }
+                  } catch (saveError) {
+                    steps.push({
+                      step: "Database save error",
+                      status: "error",
+                      error: saveError.message,
+                    });
+                  }
+                }
+
+                finalResult = {
+                  title: blogData.blog_post.title || celebrityName,
+                  content: humanizedContent,
+                  imageUrl: imageData.url || null,
+                  sources: sourcesData,
+                  wordpress: wpData,
+                };
+              } else if (draftSaved) {
+                await schedulePublishRetry({
+                  websiteId,
+                  celebrityName,
+                  error: wpData.error || wpData.message || "WordPress publish failed",
+                  status: 500,
                 });
+                deferredPublish = true;
               }
             }
-
-            finalResult = {
-              title: blogData.blog_post.title || celebrityName,
-              content: humanizedContent,
-              imageUrl: imageData.url || null,
-              sources: sourcesData,
-              wordpress: wpData,
-            };
           }
         }
       }
@@ -338,12 +422,27 @@ export async function POST(request) {
         status: "error",
         error: error.message,
       });
+      if (draftSaved && !deferredPublish) {
+        try {
+          await schedulePublishRetry({
+            websiteId,
+            celebrityName,
+            error: error.message,
+            status: 500,
+          });
+          deferredPublish = true;
+        } catch (retryError) {
+          console.error("Failed to schedule publish retry:", retryError);
+        }
+      }
     }
 
     // Return response with steps
     return NextResponse.json({
       success: finalResult !== null,
       celebrityName,
+      draft_saved: draftSaved,
+      deferred_publish: deferredPublish,
       steps,
       result: finalResult,
     }, {

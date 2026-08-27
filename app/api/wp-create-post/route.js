@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { isAuthorized } from "@/lib/cronAuth";
 import { searchCelebrityUrl } from "@/lib/duplicateCheck";
 
+export const maxDuration = 300;
+
 // WordPress Configuration
 const WP_BASE =
   process.env.WP_BASE_URL || "https://whatreligionisinfo.com/wp-json/wp/v2";

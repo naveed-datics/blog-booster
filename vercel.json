@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/daily-articles",
       "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/retry-publish",
+      "schedule": "*/10 * * * *"
     }
   ]
 }

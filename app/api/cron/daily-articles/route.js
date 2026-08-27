@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 import { query } from "@/lib/db";
+import { isInvocationTimeout } from "@/lib/articlePipeline";
+import { getCronBaseUrl } from "@/lib/productionBaseUrl";
+
+export const maxDuration = 300;
 
 // Table may not exist yet on a fresh deploy (created lazily here instead of
 // requiring a separate manual migration step before this route can log a
@@ -79,7 +83,7 @@ const TARGET_WEBSITE_ID = 1; // whatreligionisinfo.com
 // This route's internal calls must always hit the real production
 // domain, independent of both of the above.
 function getBaseUrl() {
-  return "https://blog-booster.vercel.app";
+  return getCronBaseUrl();
 }
 
 // Defense-in-depth: even with getBaseUrl() fixed, parse failures should
@@ -148,11 +152,23 @@ export async function GET(request) {
 
     if (!autoGenResponse.ok) {
       const errorText = await autoGenResponse.text();
-      throw new Error(
-        `auto-generate-articles failed: ${autoGenResponse.status} ${errorText.substring(0, 300)}`
-      );
+      if (isInvocationTimeout(autoGenResponse.status, errorText)) {
+        summary.auto_generate = {
+          timeout: true,
+          deferred: true,
+          error: errorText.substring(0, 300),
+        };
+        console.warn(
+          "[cron/daily-articles] auto-generate-articles timed out; drafts (if saved) will be published by retry-publish. Continuing to stale refresh."
+        );
+      } else {
+        throw new Error(
+          `auto-generate-articles failed: ${autoGenResponse.status} ${errorText.substring(0, 300)}`
+        );
+      }
+    } else {
+      summary.auto_generate = await parseJsonOrThrow(autoGenResponse, "auto-generate-articles");
     }
-    summary.auto_generate = await parseJsonOrThrow(autoGenResponse, "auto-generate-articles");
 
     // Step 3: refresh existing articles that are both currently trending
     // again AND stale, so that search interest we'd otherwise waste (the
@@ -166,11 +182,19 @@ export async function GET(request) {
 
     if (!refreshResponse.ok) {
       const errorText = await refreshResponse.text();
-      throw new Error(
-        `update-stale-articles failed: ${refreshResponse.status} ${errorText.substring(0, 300)}`
-      );
+      if (isInvocationTimeout(refreshResponse.status, errorText)) {
+        summary.refresh_stale = {
+          timeout: true,
+          error: errorText.substring(0, 300),
+        };
+      } else {
+        throw new Error(
+          `update-stale-articles failed: ${refreshResponse.status} ${errorText.substring(0, 300)}`
+        );
+      }
+    } else {
+      summary.refresh_stale = await parseJsonOrThrow(refreshResponse, "update-stale-articles");
     }
-    summary.refresh_stale = await parseJsonOrThrow(refreshResponse, "update-stale-articles");
   } catch (error) {
     console.error("[cron/daily-articles] Error:", error);
     summary.error = error.message;

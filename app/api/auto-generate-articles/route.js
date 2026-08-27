@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { query } from "@/lib/db";
 import { isAuthorized } from "@/lib/cronAuth";
+import { ensureArticleDraftsTable } from "@/lib/articleDrafts";
+import { isInvocationTimeout } from "@/lib/articlePipeline";
+import { getCronBaseUrl } from "@/lib/productionBaseUrl";
+
+export const maxDuration = 300;
 
 // Detects quota/rate-limit style failures (Tavily, SerpAPI, Azure OpenAI,
 // etc.) from an error message or step list, so the batch can stop early
@@ -24,7 +29,12 @@ function looksLikeQuotaError(text) {
 
 // Helper function to get base URL from request
 function getBaseUrl(request) {
-  // Try to get from request headers first (for internal calls)
+  const cronSecret = process.env.CRON_SECRET;
+  const providedSecret = request.headers.get("x-cron-secret");
+  if (cronSecret && providedSecret && providedSecret === cronSecret) {
+    return getCronBaseUrl();
+  }
+
   const host = request.headers.get("host");
   const protocol = request.headers.get("x-forwarded-proto") || "http";
   
@@ -65,11 +75,11 @@ export async function POST(request) {
 
     console.log(`Auto-generating articles for website_id: ${websiteId}, limit: ${limit}`);
 
-    // Get ONLY trends from Processing queue (items without URLs)
-    // These are the items that appear in the "Processing" tab on the AI Dashboard
-    // Items with URLs are in "Complete" or "Update" tabs and should NOT be processed
-    // STRICT: Only process items where url IS NULL or empty string (Processing tab only)
-    // Update tab items have URLs, so they are automatically excluded
+    await ensureArticleDraftsTable();
+
+    // Get ONLY trends from Processing queue (items without URLs) that do
+    // not already have a saved draft. Drafts are published by the
+    // retry-publish cron so we never re-run write-blog/humanize for them.
     const trendsResult = await query(
       `SELECT 
         id,
@@ -82,9 +92,15 @@ export async function POST(request) {
         AND celebrity_name IS NOT NULL
         AND celebrity_name != ''
         AND (url IS NULL OR url = '' OR TRIM(url) = '')
+        AND NOT EXISTS (
+          SELECT 1 FROM article_drafts d
+          WHERE d.website_id = trends.website_id
+            AND d.celebrity_name = trends.celebrity_name
+            AND d.pipeline_status IN ('draft_ready', 'publishing', 'published')
+        )
       ORDER BY created_at ASC
       LIMIT $2`,
-      [parseInt(websiteId), parseInt(limit) > 0 ? parseInt(limit) : 1000] // Process all items in Processing queue only
+      [parseInt(websiteId), parseInt(limit) > 0 ? parseInt(limit) : 1000]
     );
 
     if (trendsResult.rows.length === 0) {
@@ -104,6 +120,7 @@ export async function POST(request) {
     const results = [];
     let quotaExhausted = false;
     let quotaExhaustedReason = null;
+    const deadlineMs = Date.now() + 4 * 60 * 1000;
     
     console.log(`Using base URL: ${baseUrl}`);
 
@@ -111,6 +128,11 @@ export async function POST(request) {
     for (const trend of trendsResult.rows) {
       if (quotaExhausted) {
         console.log(`⏹️ Stopping batch early - quota exhausted (${quotaExhaustedReason}). Remaining items left untouched for the next run.`);
+        break;
+      }
+
+      if (Date.now() > deadlineMs) {
+        console.log("⏹️ Stopping batch early - approaching function timeout. Remaining items stay in the queue.");
         break;
       }
 
@@ -136,6 +158,7 @@ export async function POST(request) {
           body: JSON.stringify({
             celebrityName,
             websiteId: websiteId,
+            trendId: trend.id,
           }),
         });
 
@@ -148,6 +171,10 @@ export async function POST(request) {
             success: false,
             error: `HTTP ${generateResponse.status}: ${errorText.substring(0, 200)}`,
           });
+          if (isInvocationTimeout(generateResponse.status, errorText)) {
+            console.log("⏹️ Stopping batch early - generate-article timed out.");
+            break;
+          }
           continue;
         }
 
@@ -166,6 +193,17 @@ export async function POST(request) {
         }
 
         const generateData = await generateResponse.json();
+
+        if (generateData.deferred_publish || (generateData.draft_saved && !generateData.success)) {
+          results.push({
+            celebrity_name: celebrityName,
+            trend_id: trend.id,
+            success: false,
+            deferred_publish: true,
+            error: "WordPress publish deferred; draft saved for retry",
+          });
+          continue;
+        }
 
         if (generateData.success && generateData.result) {
           // Check if WordPress post was created successfully
@@ -247,15 +285,17 @@ export async function POST(request) {
     }
 
     const successCount = results.filter((r) => r.success).length;
-    const failureCount = results.filter((r) => !r.success).length;
+    const deferredCount = results.filter((r) => r.deferred_publish).length;
+    const failureCount = results.filter((r) => !r.success && !r.deferred_publish).length;
 
-    console.log(`✅ Auto-generation complete: ${successCount} succeeded, ${failureCount} failed`);
+    console.log(`✅ Auto-generation complete: ${successCount} succeeded, ${deferredCount} deferred publish, ${failureCount} failed`);
 
     return NextResponse.json({
       success: true,
       processed: trendsResult.rows.length,
       attempted: results.length,
       succeeded: successCount,
+      deferred_publish: deferredCount,
       failed: failureCount,
       stopped_early_for_quota: quotaExhausted,
       quota_exhausted_reason: quotaExhaustedReason,
