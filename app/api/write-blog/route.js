@@ -9,13 +9,11 @@ function injectQualityGuidelines(promptTemplate) {
 CRITICAL CONTENT QUALITY RULES (MUST FOLLOW):
 - NO REPETITION: Never repeat the same information in multiple sections. Each section must provide NEW, UNIQUE information.
 - BE SPECIFIC: Use concrete details, dates, facts, and examples from the context. Avoid vague statements like "likely", "may have", "probably" unless context explicitly supports uncertainty.
-- ADD DEPTH: Each section should be substantial (150-300 words minimum). Provide comprehensive information, not surface-level summaries.
 - SMOOTH TRANSITIONS: Use connecting phrases between paragraphs and sections to create natural flow.
-- CONCRETE EXAMPLES: Include specific details, anecdotes, or case studies from the context when available.
+- CONCRETE EXAMPLES: Include specific details from the context when available.
 - UNIQUE CONTENT PER SECTION: If information appears in one section, do NOT repeat it in another. Reference it briefly if needed, but don't duplicate.
-- AVOID FILLER: Every sentence must add value. Remove generic statements that don't provide specific information.
-- SPECIFIC FAQs: Each FAQ should answer a specific, useful question with detailed information (50-100 words per answer).
-- SPECIFIC RELATED QUERIES: Each query should be a real search term someone might use, with detailed answers (50-100 words per answer).
+- AVOID FILLER: Every sentence must add value and advance the religion question. Do not include biography, career, or family details that don't bear on the religion question. Length follows the evidence, not a target word count - a short well-sourced section beats a padded one.
+- SPECIFIC FAQs: Each FAQ should answer a specific, useful question with detailed information (50-100 words per answer), sourced the same way as the rest of the article.
 - BOLD TAG SPACING: When using <b> or <strong> tags, ALWAYS ensure there is a space before the opening tag and after the closing tag. For example: "of <b>celebrity name religion</b> is" NOT "of<b>celebrity name religion</b>is". Always add spaces around bold tags to ensure proper word separation.
 `;
 
@@ -42,75 +40,63 @@ CRITICAL CONTENT QUALITY RULES (MUST FOLLOW):
   return qualityGuidelines + "\n\n" + promptTemplate;
 }
 
-// Pool of possible section angles. A random subset (in random order) is
-// picked per article so no two articles share the same heading skeleton -
-// publishing hundreds of pages with an identical H2/FAQ structure is a
-// well-documented scaled-content signal that gets pages excluded from
-// Google's index ("Crawled - currently not indexed"), regardless of how
-// long or well-written each individual page is.
-const SECTION_POOL = [
-  "Early Life and How Faith Entered the Picture",
-  "Family Background and Religious Upbringing",
-  "What They've Said Publicly About Their Faith",
-  "Religious Practices and How Observant They Are",
-  "How Their Faith Shows Up in Their Public Career",
-  "Community, Charity, or Advocacy Tied to Their Beliefs",
-  "Reactions and Public Discussion of Their Religious Identity",
-  "Faith and Identity: What's Confirmed vs. Speculated",
-  "Key Moments Where Religion Became Public News",
-  "Their Partner's or Family's Religious Background",
-  "Cultural Background vs. Personal Belief - the Distinction",
-  "How They've Addressed Misconceptions About Their Faith",
-  "Religious Holidays or Traditions They're Known to Observe",
-  "Comparisons to Others in Their Field Who Share (or Differ in) Faith",
-  "Timeline: How Their Public Statements on Faith Have Evolved",
-  "What Fans and Media Get Wrong About Their Religion",
+// Strings that reveal unfilled template variables or generic filler
+// pronouns instead of the person's actual name/pronoun - a dead giveaway of
+// scaled/automated content to any reader who spots it.
+const TEMPLATE_LEFTOVER_PATTERNS = [
+  /\[name\]/i,
+  /\bthis person\b/i,
+  /\bthey're religion\b/i,
+  /\btheir religion\b/i,
 ];
 
-const OPENING_HOOK_STYLES = [
-  "Open by directly answering the core question in the first sentence, then explain the nuance.",
-  "Open with the most surprising or least-known fact about their faith, then build context.",
-  "Open by naming the specific controversy or public moment that made people search this, then answer it.",
-  "Open with a short, direct quote (paraphrased, attributed) from the person about their beliefs, then unpack it.",
-  "Open by stating plainly what is confirmed vs. rumored, then explain why the confusion exists.",
-];
-
-const FAQ_QUESTION_BANK = [
-  "a question phrased the way someone would actually type it into Google (informal, specific)",
-  "a question that addresses the single most common misconception about this person's faith",
-  "a question comparing this person's faith to a family member's or partner's",
-  "a question about a specific public event, quote, or controversy tied to their religion",
-  "a question about how their faith is reflected (or not) in their public career",
-  "a question directly asking 'is [name] [specific religion]?' in a way that matches real search phrasing",
-];
-
-function pickRandom(arr, count) {
-  const shuffled = [...arr].sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, Math.min(count, arr.length));
+function findTemplateLeftovers(html) {
+  return TEMPLATE_LEFTOVER_PATTERNS.filter((pattern) => pattern.test(html));
 }
 
-// Injects a randomized structural directive that overrides any fixed
-// heading list implied elsewhere in the prompt (including a custom
-// per-website template pulled from the database).
-function injectStructuralVariation(promptTemplate, celebrityName) {
-  const sectionCount = 3 + Math.floor(Math.random() * 3); // 3-5 sections
-  const sections = pickRandom(SECTION_POOL, sectionCount);
-  const hookStyle = pickRandom(OPENING_HOOK_STYLES, 1)[0];
-  const faqAngles = pickRandom(FAQ_QUESTION_BANK, 3);
+// Builds the answer-first structural directive from the extract-answer
+// step's output instead of picking a random heading skeleton. Only the
+// sections the evidence actually supports get written - no fixed template,
+// no padding, no section admitting "there is no information."
+function buildAnswerDirective(celebrityName, answer) {
+  const {
+    religion,
+    denomination,
+    confidence,
+    supportingQuote,
+    sourceUrl,
+    sourceTitle,
+    additionalCitations = [],
+  } = answer;
 
-  const structuralDirective = `
+  const citationLines = additionalCitations
+    .map((c, i) => `  ${i + 1}. Claim: "${c.claim}" - Quote: "${c.quote}" - Source: ${c.sourceUrl}`)
+    .join("\n");
 
-MANDATORY STRUCTURE FOR THIS SPECIFIC ARTICLE (overrides any other heading list, section names, or section order mentioned anywhere else in this prompt):
-- Opening paragraph style: ${hookStyle}
-- Use exactly these ${sections.length} H2 section headings, in this exact order, reworded naturally to fit ${celebrityName} specifically (do not use these placeholder phrasings verbatim - rewrite each into a natural, specific heading about ${celebrityName}):
-${sections.map((s, i) => `  ${i + 1}. ${s}`).join("\n")}
-- Do NOT include any additional standard sections beyond these ${sections.length} plus FAQ/Related Queries.
-- FAQ section: write exactly 3 questions, each based on one of these angles (reworded naturally, not verbatim):
-${faqAngles.map((a, i) => `  ${i + 1}. ${a}`).join("\n")}
-- This exact combination of headings and FAQ angles should NOT resemble the structure of previous articles on this site - each article must have a genuinely different shape, not just different names swapped into the same skeleton.
+  return `
+
+MANDATORY STRUCTURE FOR THIS ARTICLE (overrides any other heading list, section names, template, or example structure mentioned anywhere else in this prompt):
+
+- The confirmed answer, established from real sources, is: ${celebrityName} is ${denomination ? `${denomination} ` : ""}${religion} (confidence: ${confidence}).
+- Primary source: "${sourceTitle}" - ${sourceUrl}
+- Supporting quote/fact from that source: "${supportingQuote}"
+${citationLines ? `- Additional sourced claims available to use as inline citations:\n${citationLines}` : ""}
+
+Write ONLY the sections this evidence actually supports. Do not use a fixed template. Use this shape as a guide, adapting or dropping any section with nothing concrete behind it:
+1. Answer (2-3 sentences): State the religion plainly in the FIRST SENTENCE of the article, with an inline HTML link to the primary source (<a href="${sourceUrl}">) at the claim. Include the denomination if known. This must be the very first sentence - not background, not a bio lead-in.
+2. The evidence: direct quotes/facts from ${celebrityName} or reliable sources, each with an inline <a href="..."> link to the specific source URL it came from. Use ONLY the source URLs given above - never invent, paraphrase-as-fact without a link, or cite anything not explicitly provided.
+3. Background - ONLY the parts of their upbringing or family that directly explain the current answer, cited the same way. Skip generic biography (career milestones, unrelated family history) entirely.
+4. Where it shows up - concrete, cited examples only (public statements, votes, projects, observed holidays). Skip this section entirely if nothing concrete and sourced exists.
+5. Controversy or public discussion - ONLY if a real, sourced controversy exists. Skip entirely otherwise.
+6. FAQ - 3 real questions someone would actually search, each answered in 50-100 words using only the sourced facts above, each citing its source inline.
+7. Sources - a visible "Sources" H2 section at the very end with a <ul><li> list of every URL actually used as an <a href> link in the article.
+
+Rules that apply to the whole article:
+- Never write a "Comparisons with Other Celebrities" or similar section - it is filler, not requested, and must not appear.
+- Never write a sentence implying religion is unknown, unconfirmed, or "not publicly discussed" - this article only exists because a public answer was already confirmed above.
+- Use "${celebrityName}" and correct pronouns throughout - never "this person," "they're religion," "their religion" as generic filler, or literal "[Name]" placeholders.
+- Every factual claim beyond the confirmed answer above must have its own inline <a href> citation to one of the provided source URLs. Do not name a source without linking it (e.g. never "according to a study" with no link).
 `;
-
-  return promptTemplate + "\n\n" + structuralDirective;
 }
 
 // POST endpoint to write blog post
@@ -124,28 +110,36 @@ export async function POST(request) {
     const { searchParams } = new URL(request.url);
     let keyword = searchParams.get("keyword") || "";
 
-    // Get the raw body as text (scraped content)
-    // Support both JSON and plain text formats
+    // A JSON body is now required: alongside the scraped content, this
+    // route needs the structured, sourced answer produced by the
+    // extract-answer step to write an answer-first, cited article instead
+    // of asking the model to infer both the answer and its sourcing from a
+    // raw text blob.
     let blogText = "";
+    let answer = null;
     const contentType = request.headers.get("content-type") || "";
 
     try {
       if (contentType.includes("application/json")) {
-        // JSON format: { keyword: "...", content: "..." }
         const body = await request.json();
         blogText = body.content || body.scrapedContent || body.text || "";
-        // Override keyword if provided in JSON body
+        answer = body.answer || null;
         if (body.keyword && body.keyword.trim()) {
           keyword = body.keyword.trim();
         }
       } else {
-        // Plain text format: raw text in body
-        blogText = await request.text();
+        return NextResponse.json(
+          {
+            error:
+              "This endpoint requires a JSON body with { content, answer, keyword } - plain text bodies are no longer accepted because a sourced answer object is required.",
+          },
+          { status: 400 }
+        );
       }
     } catch (e) {
       return NextResponse.json(
         {
-          error: "Failed to read request body. Please provide scraped content.",
+          error: "Failed to read request body. Please provide JSON with content and answer.",
         },
         { status: 400 }
       );
@@ -161,6 +155,23 @@ export async function POST(request) {
     if (!blogText || !blogText.trim()) {
       return NextResponse.json(
         { error: "Blog text (scraped content) is required" },
+        { status: 422 }
+      );
+    }
+
+    if (
+      !answer ||
+      !answer.hasPublicAnswer ||
+      !answer.religion ||
+      !answer.sourceUrl
+    ) {
+      // Never write an article whose religion answer isn't confirmed and
+      // sourced - a page that says nothing is worse than no page.
+      return NextResponse.json(
+        {
+          error:
+            "A confirmed, sourced answer is required (answer.hasPublicAnswer, answer.religion, answer.sourceUrl). Run extract-answer first; do not publish when no public answer was found.",
+        },
         { status: 422 }
       );
     }
@@ -197,189 +208,108 @@ export async function POST(request) {
       );
     }
 
-    // Get website_id from query params or body to fetch custom prompt template and niche
+    // Get website_id from query params to fetch the niche (used only for
+    // FAQ topical relevance, e.g. "in relation to sports"). The per-website
+    // prompt_template DB override that used to control overall structure is
+    // no longer honored here - per the 2026-08-10 decision log it was the
+    // suspected root cause of the site's identical-template indexing
+    // problem, and structure is now driven entirely by the sourced answer
+    // below, not by an arbitrary stored template.
     const websiteId = searchParams.get("website_id");
-    console.log("Write-blog API - Received website_id:", websiteId);
-    console.log(
-      "Write-blog API - All searchParams:",
-      Object.fromEntries(searchParams.entries())
-    );
-    let customPromptTemplate = null;
     let websiteNiche = null;
 
     if (websiteId) {
       try {
         const websiteResult = await query(
-          "SELECT prompt_template, niche FROM websites WHERE id = $1",
+          "SELECT niche FROM websites WHERE id = $1",
           [parseInt(websiteId)]
         );
-        if (websiteResult.rows.length > 0) {
-          if (
-            websiteResult.rows[0].prompt_template &&
-            websiteResult.rows[0].prompt_template.trim()
-          ) {
-            customPromptTemplate = websiteResult.rows[0].prompt_template.trim();
-            console.log(
-              `Using custom prompt template for website_id: ${websiteId}`
-            );
-          } else {
-            console.log(
-              `No custom prompt template found for website_id: ${websiteId}, using default`
-            );
-          }
-          if (
-            websiteResult.rows[0].niche &&
-            websiteResult.rows[0].niche.trim()
-          ) {
-            websiteNiche = websiteResult.rows[0].niche.trim();
-            console.log(
-              `Using niche for website_id ${websiteId}: ${websiteNiche}`
-            );
-          }
+        if (websiteResult.rows.length > 0 && websiteResult.rows[0].niche?.trim()) {
+          websiteNiche = websiteResult.rows[0].niche.trim();
         }
       } catch (error) {
-        console.error("Error fetching custom prompt template:", error);
-        // Continue with default template if error
+        console.error("Error fetching website niche:", error);
       }
     }
 
-    // Define the default simple SEO-optimized prompt template
     const celebrityName = keyword;
     const nicheContext = websiteNiche
-      ? `\n\nIMPORTANT - FAQ and Related Queries Section:
-- Include a FAQ (Frequently Asked Questions) section at the end of the article
-- Include a Related Queries section at the end of the article
-- ALL FAQ questions and Related Queries MUST be relevant to the niche: "${websiteNiche}"
-- FAQ questions should be about ${celebrityName} in relation to "${websiteNiche}"
-- Related Queries should be search queries people might have about ${celebrityName} related to "${websiteNiche}"
-- Do NOT include random or unrelated questions/queries
-- Format FAQ using <h2>FAQ</h2> and <h3> for each question, with <p> for answers
-- Format Related Queries using <h2>Related Queries</h2> and <ul><li> for each query`
+      ? `\n\nWhere natural, prefer FAQ questions and evidence relevant to the niche "${websiteNiche}" - but never at the expense of accuracy or sourcing.`
       : "";
 
-    const defaultPromptTemplate = `
-Write a comprehensive SEO-optimized blog post about ${celebrityName} using the provided context. Create ACTUAL content, not template instructions.
+    let promptTemplate = `
+Write an article answering "What religion is ${celebrityName}?" using ONLY the provided context and the confirmed answer below. Create ACTUAL content, not template instructions.
 
-Context: ${blogText}
-Focus keyword: ${celebrityName}${nicheContext}
+Context: ${blogText}${nicheContext}
 
-Instructions:
-You are an Expert Blog Writer. Write an SEO-friendly blog post in a natural, human tone using the provided context.
-
-SEO Optimization:
-- Use the focus keyword "${celebrityName}" naturally throughout the content
-- Include related LSI (Latent Semantic Indexing) keywords and synonyms
-- Use proper HTML heading structure (H2, H3) for better SEO
-- Write engaging, informative content that provides value to readers
-- Use short paragraphs and bullet lists for better readability
-- Bold important terms using the HTML <b> tag where natural
-- Do NOT use meta statements like "the provided information confirms," "based on the provided information," or similar
-
-Content Requirements:
-- Write comprehensive, well-researched content based on the provided context
-- Use the context information to create informative and engaging content
-- Structure the content with clear headings and subheadings
-- Include an introduction, main content sections, and a conclusion
-- Write in a natural, human tone that engages readers
-- Ensure all information is accurate based on the provided context
-- Each section should be substantial (150-300 words minimum) with specific details
-- Avoid repeating the same information across multiple sections
-- Use concrete examples and specific details from the context
-- Create smooth transitions between paragraphs and sections
-
-Output Format:
-- Output clean HTML markup
-- Use proper HTML tags (p, h2, h3, ul, li, b, etc.)
-- Do not include code blocks or markdown
-- Ensure all HTML tags are properly closed
+Write an SEO-friendly article in a natural, human tone. Use proper HTML heading structure (H2, H3), short paragraphs, and bullet lists where useful. Bold important terms with <b> where natural. Do NOT use meta statements like "the provided information confirms" or "based on the provided information." Output clean HTML markup only - no code blocks, no markdown, all tags properly closed.
     `;
 
-    // Use custom prompt template if available and not empty, otherwise use default simple SEO-optimized prompt
-    let promptTemplate;
-    if (customPromptTemplate && customPromptTemplate.trim()) {
-      // User has custom prompt template - use it and replace placeholders
-      promptTemplate = customPromptTemplate
-        .replace(/\$\{celebrityName\}/g, celebrityName)
-        .replace(/\$\{blogText\}/g, blogText)
-        .replace(/\$\{niche\}/g, websiteNiche || "");
+    // Inject quality guidelines (works for both custom and default)
+    promptTemplate = injectQualityGuidelines(promptTemplate);
 
-      // If niche is available and custom template doesn't have FAQ/Related Queries instructions, append them
-      if (
-        websiteNiche &&
-        !promptTemplate.includes("FAQ") &&
-        !promptTemplate.includes("Related Queries")
-      ) {
-        promptTemplate += `\n\nIMPORTANT - FAQ and Related Queries Section:
-- Include a FAQ (Frequently Asked Questions) section at the end of the article
-- Include a Related Queries section at the end of the article
-- ALL FAQ questions and Related Queries MUST be relevant to the niche: "${websiteNiche}"
-- FAQ questions should be about ${celebrityName} in relation to "${websiteNiche}"
-- Related Queries should be search queries people might have about ${celebrityName} related to "${websiteNiche}"
-- Do NOT include random or unrelated questions/queries
-- Format FAQ using <h2>FAQ</h2> and <h3> for each question, with <p> for answers
-- Format Related Queries using <h2>Related Queries</h2> and <ul><li> for each query`;
+    // Injects the answer-first, cited, non-templated structural directive
+    // built from the extract-answer step's confirmed output.
+    promptTemplate = promptTemplate + buildAnswerDirective(celebrityName, answer);
+
+    const systemPrompt =
+      "You are an expert content writer specializing in well-sourced, fact-checked articles. Create REAL, engaging content based strictly on the provided context and confirmed answer. Never output template instructions or placeholder text. Every factual claim beyond the confirmed answer must carry its own inline <a href> citation to one of the provided source URLs - never cite a source by name without linking it, and never invent a source. Output only clean HTML markup with real content.";
+
+    async function callModel(prompt) {
+      if (useAzure) {
+        const endpoint = azureEndpoint.replace(/\/$/, "");
+        const azureUrl = `${endpoint}/openai/deployments/${azureDeploymentName}/chat/completions?api-version=${azureApiVersion}`;
+
+        const response = await fetch(azureUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "api-key": azureApiKey,
+          },
+          body: JSON.stringify({
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: prompt },
+            ],
+            temperature: 0.7,
+            top_p: 0.9,
+            presence_penalty: 0.3,
+            frequency_penalty: 0.2,
+            max_tokens: 4000,
+          }),
+        });
+
+        if (!response.ok) {
+          let errorMessage = `Azure OpenAI API error: ${response.status} ${response.statusText}`;
+          try {
+            const errorData = await response.json();
+            errorMessage = `Azure OpenAI API error: ${
+              errorData.error?.message || errorData.error?.code || response.statusText
+            }`;
+          } catch (e) {
+            const errorText = await response.text();
+            errorMessage = `Azure OpenAI API error: ${response.status} ${
+              response.statusText
+            }. ${errorText.substring(0, 200)}`;
+          }
+          throw new Error(errorMessage);
+        }
+
+        const data = await response.json();
+        return data.choices[0]?.message?.content || "";
       }
 
-      console.log(
-        `Using custom prompt template (length: ${promptTemplate.length})`
-      );
-    } else {
-      // No custom template or empty - use default simple SEO-optimized prompt
-      // (defaultPromptTemplate already has ${celebrityName} and ${blogText} interpolated via template literal)
-      promptTemplate = defaultPromptTemplate;
-      console.log(
-        `Using default prompt template (website_id: ${
-          websiteId || "none"
-        }, niche: ${websiteNiche || "none"})`
-      );
-    }
-
-    // Inject quality guidelines into the prompt template (works for both custom and default)
-    promptTemplate = injectQualityGuidelines(promptTemplate);
-    console.log("Quality guidelines injected into prompt template");
-
-    // Force per-article structural variation, overriding any fixed heading
-    // list implied by a custom template stored in the database. This is
-    // what actually prevents every article from sharing the same H2/FAQ
-    // skeleton - the root cause of most of this site's pages never getting
-    // indexed by Google.
-    promptTemplate = injectStructuralVariation(promptTemplate, celebrityName);
-    console.log("Structural variation directive injected into prompt template");
-
-    let blogContent = "";
-
-    // Use Azure OpenAI if available, otherwise use OpenAI
-    if (useAzure) {
-      // Azure OpenAI - use endpoint directly
-      // Remove trailing slash if present and ensure proper format
-      const endpoint = azureEndpoint.replace(/\/$/, "");
-      const azureUrl = `${endpoint}/openai/deployments/${azureDeploymentName}/chat/completions?api-version=${azureApiVersion}`;
-
-      console.log("Using Azure OpenAI:", {
-        endpoint,
-        deploymentName: azureDeploymentName,
-        apiVersion: azureApiVersion,
-        url: azureUrl,
-        hasApiKey: !!azureApiKey,
-      });
-
-      const response = await fetch(azureUrl, {
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "api-key": azureApiKey,
+          Authorization: `Bearer ${openaiApiKey}`,
         },
         body: JSON.stringify({
+          model: "gpt-4",
           messages: [
-            {
-              role: "system",
-              content:
-                "You are an expert content writer. Create REAL, engaging content based on the provided information. Never output template instructions or placeholder text. Write actual informative content that answers the user's questions. Output only clean HTML markup with real content.",
-            },
-            {
-              role: "user",
-              content: promptTemplate,
-            },
+            { role: "system", content: systemPrompt },
+            { role: "user", content: prompt },
           ],
           temperature: 0.7,
           top_p: 0.9,
@@ -390,60 +320,6 @@ Output Format:
       });
 
       if (!response.ok) {
-        let errorMessage = `Azure OpenAI API error: ${response.status} ${response.statusText}`;
-        try {
-          const errorData = await response.json();
-          errorMessage = `Azure OpenAI API error: ${
-            errorData.error?.message ||
-            errorData.error?.code ||
-            response.statusText
-          }`;
-          console.error("Azure OpenAI error details:", errorData);
-        } catch (e) {
-          const errorText = await response.text();
-          console.error("Azure OpenAI error response:", errorText);
-          errorMessage = `Azure OpenAI API error: ${response.status} ${
-            response.statusText
-          }. ${errorText.substring(0, 200)}`;
-        }
-        throw new Error(errorMessage);
-      }
-
-      const data = await response.json();
-      blogContent = data.choices[0]?.message?.content || "";
-    } else {
-      // Standard OpenAI
-      const response = await fetch(
-        "https://api.openai.com/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${openaiApiKey}`,
-          },
-          body: JSON.stringify({
-            model: "gpt-4",
-            messages: [
-              {
-                role: "system",
-                content:
-                  "You are an expert content writer. Create REAL, engaging content based on the provided information. Never output template instructions or placeholder text. Write actual informative content that answers the user's questions. Output only clean HTML markup with real content.",
-              },
-              {
-                role: "user",
-                content: promptTemplate,
-              },
-            ],
-            temperature: 0.7,
-            top_p: 0.9,
-            presence_penalty: 0.3,
-            frequency_penalty: 0.2,
-            max_tokens: 4000,
-          }),
-        }
-      );
-
-      if (!response.ok) {
         const errorData = await response.json();
         throw new Error(
           `OpenAI API error: ${errorData.error?.message || response.statusText}`
@@ -451,62 +327,69 @@ Output Format:
       }
 
       const data = await response.json();
-      blogContent = data.choices[0]?.message?.content || "";
+      return data.choices[0]?.message?.content || "";
     }
 
+    function cleanUpOutput(raw) {
+      let content = raw
+        .replace(/```html\n?/g, "")
+        .replace(/```html/g, "");
+      content = content.replace(/```\n?/g, "").replace(/```/g, "");
+      content = content.replace(/\n```/g, "");
+      content = content.replace(/\\n/g, "");
+      content = content.replace(/\r\n/g, "");
+      content = content.replace(/\r/g, "");
+      content = content.replace(/\n/g, "");
+      content = content.replace(/>\s+</g, "><");
+      content = content.replace(
+        /([a-zA-Z0-9.,;:!?)])<(?![\/])(b|strong|i|em|u|span)>/g,
+        "$1 <$2>"
+      );
+      content = content.replace(
+        /<\/(b|strong|i|em|u|span)>([a-zA-Z0-9.,;:!?(])/g,
+        "</$1> $2"
+      );
+      content = content.replace(/\s{2,}/g, " ");
+      content = content.replace(/\s*(<!--[^>]*-->)\s*/g, "$1");
+      content = content.replace(
+        /(<!-- \/wp:[^>]*? -->)(<!-- wp:[^>]*? -->)/g,
+        "$1\n$2"
+      );
+      content = content.replace(/>\n</g, "><");
+      content = content.trim();
+
+      if (!content.startsWith("<")) {
+        const firstTagIndex = content.indexOf("<");
+        if (firstTagIndex > 0) {
+          content = content.substring(firstTagIndex);
+        }
+      }
+      return content;
+    }
+
+    let blogContent = cleanUpOutput(await callModel(promptTemplate));
     if (!blogContent) {
       throw new Error("Failed to generate blog content");
     }
 
-    // Clean up the output (similar to Python function)
-    // Remove code block markers
-    blogContent = blogContent
-      .replace(/```html\n?/g, "")
-      .replace(/```html/g, "");
-    blogContent = blogContent.replace(/```\n?/g, "").replace(/```/g, "");
-    blogContent = blogContent.replace(/\n```/g, "");
-
-    // Remove escaped newlines
-    blogContent = blogContent.replace(/\\n/g, "");
-    blogContent = blogContent.replace(/\r\n/g, "");
-    blogContent = blogContent.replace(/\r/g, "");
-    blogContent = blogContent.replace(/\n/g, "");
-
-    // Remove whitespace between tags
-    blogContent = blogContent.replace(/>\s+</g, "><");
-
-    // Fix spacing around inline formatting tags (b, strong, i, em, u, span)
-    // Add space before opening tag if it's directly adjacent to a word character (not already spaced)
-    blogContent = blogContent.replace(
-      /([a-zA-Z0-9.,;:!?)])<(?![\/])(b|strong|i|em|u|span)>/g,
-      "$1 <$2>"
-    );
-    // Add space after closing tag if it's directly adjacent to a word character (not already spaced)
-    blogContent = blogContent.replace(
-      /<\/(b|strong|i|em|u|span)>([a-zA-Z0-9.,;:!?(])/g,
-      "</$1> $2"
-    );
-    // Remove double spaces that might have been created
-    blogContent = blogContent.replace(/\s{2,}/g, " ");
-
-    // Clean up spaces around comments
-    blogContent = blogContent.replace(/\s*(<!--[^>]*-->)\s*/g, "$1");
-
-    // Add single newlines between blocks
-    blogContent = blogContent.replace(
-      /(<!-- \/wp:[^>]*? -->)(<!-- wp:[^>]*? -->)/g,
-      "$1\n$2"
-    );
-    blogContent = blogContent.replace(/>\n</g, "><");
-
-    // Final cleanup
-    blogContent = blogContent.trim();
-
-    // Ensure it starts with proper content
-    if (!blogContent.startsWith("<")) {
-      const firstTagIndex = blogContent.indexOf("<");
-      if (firstTagIndex > 0) {
-        blogContent = blogContent.substring(firstTagIndex);
+    // Retry once if the model left unfilled template variables or generic
+    // filler pronouns instead of the person's actual name - a reader spots
+    // this instantly as machine output (Part A4 of the content checklist).
+    let leftovers = findTemplateLeftovers(blogContent);
+    if (leftovers.length > 0) {
+      console.warn(
+        `Template leftovers detected for ${celebrityName}, retrying once:`,
+        leftovers.map((p) => p.source)
+      );
+      const retryPrompt =
+        promptTemplate +
+        `\n\nIMPORTANT: Your previous attempt left unfilled template text or generic filler pronouns (e.g. "their religion", "this person", "[Name]") instead of "${celebrityName}" and correct pronouns. Rewrite using the person's actual name/pronouns throughout - no placeholders.`;
+      blogContent = cleanUpOutput(await callModel(retryPrompt));
+      leftovers = findTemplateLeftovers(blogContent);
+      if (leftovers.length > 0) {
+        throw new Error(
+          "Generated content still contains unfilled template placeholders after retry - refusing to publish."
+        );
       }
     }
 

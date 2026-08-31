@@ -92,6 +92,7 @@ export async function POST(request) {
         AND celebrity_name IS NOT NULL
         AND celebrity_name != ''
         AND (url IS NULL OR url = '' OR TRIM(url) = '')
+        AND skip_reason IS NULL
         AND NOT EXISTS (
           SELECT 1 FROM article_drafts d
           WHERE d.website_id = trends.website_id

@@ -67,6 +67,7 @@ export async function GET(request) {
           keyword: celebrityName,
           website_id: websiteId,
           image_url: draft.image_url || null,
+          answer: draft.answer_json || null,
         }),
       });
 
@@ -116,6 +117,7 @@ export async function GET(request) {
             content: draft.draft_html,
             slug: wpData.slug || null,
             meta_description: wpData.meta_description || null,
+            religion: draft.answer_json?.religion || null,
           }),
         });
         if (!saveResponse.ok) {

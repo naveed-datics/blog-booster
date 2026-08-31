@@ -78,10 +78,94 @@ async function getRisingTrends(searchQuery = 'religion') {
 // shared with the one-time backfill route so both use identical matching
 // logic and can never drift apart.
 
+// Screens candidate names against Part C's target-selection criteria before
+// they ever reach find-sources/fetch-content, so no search/scrape budget is
+// wasted on people this site shouldn't cover in the first place: not a real
+// identifiable individual, not someone whose religion is a genuinely common
+// public question, not someone whose faith is actually publicly discussed,
+// or a historical figure with centuries of existing scholarship. Uses the
+// same Azure OpenAI call pattern as extractCelebrities() above - a cheap
+// judgment call on the name alone, distinct from (and a cheaper backstop
+// to) the rigorous extract-answer step that later checks real fetched
+// content before writing.
+async function screenTopics(names) {
+  const candidates = names.filter(Boolean);
+  if (candidates.length === 0) return {};
+
+  let azureApiKey = process.env.AZURE_OPENAI_API_KEY;
+  let azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
+  let azureDeploymentName = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
+  let azureApiVersion = process.env.AZURE_OPENAI_API_VERSION || '2024-12-01-preview';
+
+  if (azureApiKey) azureApiKey = azureApiKey.replace(/^["']|["']$/g, '');
+  if (azureEndpoint) azureEndpoint = azureEndpoint.replace(/^["']|["']$/g, '');
+  if (azureDeploymentName) azureDeploymentName = azureDeploymentName.replace(/^["']|["']$/g, '');
+  if (azureApiVersion) azureApiVersion = azureApiVersion.replace(/^["']|["']$/g, '');
+
+  if (!azureApiKey || !azureEndpoint || !azureDeploymentName) {
+    // No LLM configured - allow everything through; the existing
+    // denylist/fragment filters already ran, and extract-answer will still
+    // block anything with no sourced public answer later in the pipeline.
+    console.warn('Azure OpenAI not configured, skipping topic-gating screen');
+    return {};
+  }
+
+  try {
+    const endpoint = azureEndpoint.replace(/\/$/, '');
+    const azureUrl = `${endpoint}/openai/deployments/${azureDeploymentName}/chat/completions?api-version=${azureApiVersion}`;
+
+    const systemPrompt = `You are a topic-selection gate for a site that publishes "What religion is X?" articles about public figures.
+
+For each name, decide whether it should be allowed:
+ALLOW only if ALL of these are true:
+- It is a real, identifiable living or recently-active individual (not a brand, place, or concept).
+- "What religion is [name]?" is a genuinely common public question - they are a politician, a public figure with a known conversion/faith story, someone in an active religion-related news moment, or notable in politics, business, finance, or major sport.
+- Their religion/faith is actually publicly discussed somewhere (do not assume - if you don't know of any public discussion, do NOT allow).
+- They are NOT a historical figure with centuries of existing scholarship already covering them (e.g. explorers, monarchs, religious founders from past centuries).
+
+Otherwise DENY, with a short reason (e.g. "obscure/low public interest", "historical figure with existing scholarship", "not an individual", "no known public discussion of their faith").
+
+Output ONLY a valid JSON object mapping each input name exactly as given to {"allow": boolean, "reason": string}. No commentary, no code blocks.`;
+
+    const userPrompt = `Names to screen:\n${JSON.stringify(candidates)}`;
+
+    const response = await fetch(azureUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'api-key': azureApiKey },
+      body: JSON.stringify({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0,
+        max_tokens: 1500,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(`Topic-gating screen failed: ${response.status}`);
+      return {};
+    }
+
+    const data = await response.json();
+    let raw = data.choices[0]?.message?.content?.trim() || '{}';
+    raw = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+
+    const parsed = JSON.parse(raw);
+    return typeof parsed === 'object' && parsed !== null ? parsed : {};
+  } catch (error) {
+    console.error('Error in topic-gating screen:', error);
+    // Fail open - allow through rather than block the whole batch on a
+    // parse/network error; extract-answer is still a downstream backstop.
+    return {};
+  }
+}
+
 // Helper function to save trends to database
-async function saveTrendsToDatabase(searchQuery, trendsResult, celebList, results, websiteId = null) {
+async function saveTrendsToDatabase(searchQuery, trendsResult, celebList, results, websiteId = null, topicScreen = {}) {
   let savedCount = 0;
   let skippedCount = 0;
+  let gatedCount = 0;
   
   try {
     if (!trendsResult.raw || trendsResult.raw.length === 0) {
@@ -164,15 +248,24 @@ async function saveTrendsToDatabase(searchQuery, trendsResult, celebList, result
       // Require at least two words (first + last name) to reduce generic single-word terms
       const wordCount = cleanCelebName ? cleanCelebName.split(/\s+/).length : 0;
       
-      if (cleanCelebName && 
+      if (cleanCelebName &&
           cleanCelebName.length >= 3 &&
           !isInvalid &&
           wordCount >= 2) {
-        
+
+        // Topic-selection gate (Part C): even a name that passes the
+        // denylist/fragment filters above may not be a good fit for this
+        // site (obscure, historical, no known public discussion of their
+        // faith). Still insert the row so it's auditable, but mark it
+        // skip_reason so it's excluded from the processing queue instead
+        // of silently vanishing.
+        const screenResult = topicScreen[cleanCelebName];
+        const gatedOut = screenResult && screenResult.allow === false;
+
         try {
           await query(
-            `INSERT INTO trends (search_query, trend_text, celebrity_name, trend_value, url, website_result, website_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            `INSERT INTO trends (search_query, trend_text, celebrity_name, trend_value, url, website_result, website_id, skip_reason)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
             [
               searchQuery,
               formattedTrend,
@@ -180,30 +273,36 @@ async function saveTrendsToDatabase(searchQuery, trendsResult, celebList, result
               rawTrend.value || null,
               result.URL || null,
               result.website_result || null,
-              websiteId || null
+              websiteId || null,
+              gatedOut ? `topic-gated: ${screenResult.reason || 'not a fit for this site'}` : null,
             ]
           );
-          savedCount++;
-          console.log(`✅ Saved trend: ${cleanCelebName}`);
+          if (gatedOut) {
+            gatedCount++;
+            console.log(`🚫 Topic-gated trend: ${cleanCelebName} (${screenResult.reason})`);
+          } else {
+            savedCount++;
+            console.log(`✅ Saved trend: ${cleanCelebName}`);
+          }
         } catch (insertError) {
           console.error(`Error inserting trend ${i}:`, insertError);
           skippedCount++;
         }
       } else {
         skippedCount++;
-        const reason = !cleanCelebName ? 'empty name' : 
+        const reason = !cleanCelebName ? 'empty name' :
                       cleanCelebName.length < 3 ? 'too short' :
                       invalidTerms.includes(lowerName) ? 'invalid term' :
                       'contains invalid words';
         console.log(`⏭️ Skipping non-celebrity trend ${i}: ${formattedTrend} (celebName: ${celebName}, reason: ${reason})`);
       }
     }
-    
-    console.log(`✅ Saved ${savedCount} trends to database, skipped ${skippedCount}`);
-    return { savedCount, skippedCount };
+
+    console.log(`✅ Saved ${savedCount} trends to database, gated ${gatedCount}, skipped ${skippedCount}`);
+    return { savedCount, skippedCount, gatedCount };
   } catch (error) {
     console.error('Error saving trends to database:', error);
-    return { savedCount, skippedCount };
+    return { savedCount, skippedCount, gatedCount };
   }
 }
 
@@ -532,14 +631,26 @@ export async function GET(request) {
       }
     }
 
+    // Topic-selection gate (Part C) - screen candidate names before they
+    // reach the DB queue, so obscure/historical/off-topic names never burn
+    // find-sources/fetch-content budget.
+    let topicScreen = {};
+    try {
+      topicScreen = await screenTopics(celebList);
+    } catch (screenError) {
+      console.error('Error running topic-gating screen (non-fatal):', screenError);
+    }
+
     // Save trends to database (ensure this completes before returning)
     let savedCount = 0;
     let skippedCount = 0;
+    let gatedCount = 0;
     try {
-      const saveResult = await saveTrendsToDatabase(query, trendsResult, celebList, results, websiteId);
+      const saveResult = await saveTrendsToDatabase(query, trendsResult, celebList, results, websiteId, topicScreen);
       savedCount = saveResult?.savedCount || 0;
       skippedCount = saveResult?.skippedCount || 0;
-      console.log(`✅ Successfully saved ${savedCount} trends to database (skipped ${skippedCount})`);
+      gatedCount = saveResult?.gatedCount || 0;
+      console.log(`✅ Successfully saved ${savedCount} trends to database (gated ${gatedCount}, skipped ${skippedCount})`);
     } catch (saveError) {
       console.error('Error saving trends (non-fatal):', saveError);
       // Continue even if save fails
@@ -554,6 +665,7 @@ export async function GET(request) {
       saved_to_db: savedCount > 0,
       saved_count: savedCount,
       skipped_count: skippedCount,
+      gated_count: gatedCount,
       total_trends: trendsResult.raw?.length || 0
     });
   } catch (error) {

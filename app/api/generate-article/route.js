@@ -7,6 +7,7 @@ import {
   schedulePublishRetry,
 } from "@/lib/articleDrafts";
 import { getCronBaseUrl } from "@/lib/productionBaseUrl";
+import { query } from "@/lib/db";
 
 export const maxDuration = 300;
 
@@ -198,29 +199,82 @@ export async function POST(request) {
           .join("\n\n");
 
         if (combinedContent) {
-          // Step 4: Write Blog
-          steps.push({ step: "Generating blog post...", status: "in_progress" });
-          let writeBlogUrl = `${baseUrl}/api/write-blog?keyword=${encodeURIComponent(celebrityName)}`;
-          if (websiteId) {
-            writeBlogUrl += `&website_id=${encodeURIComponent(websiteId)}`;
-          }
-          const writeBlogResponse = await fetch(writeBlogUrl, {
+          // Step 3.5: Extract a structured, sourced answer BEFORE writing -
+          // never write (or publish) a page whose honest answer is "not
+          // publicly known".
+          steps.push({ step: "Extracting sourced answer...", status: "in_progress" });
+          const extractAnswerResponse = await fetch(`${baseUrl}/api/extract-answer`, {
             method: "POST",
-            headers: { 
-              "Content-Type": "text/plain",
+            headers: {
+              "Content-Type": "application/json",
               Cookie: cookies,
-            "x-cron-secret": cronSecret,
+              "x-cron-secret": cronSecret,
             },
-            body: combinedContent,
+            body: JSON.stringify({
+              celebrityName,
+              combinedContent,
+              sourceDetails: sourcesData.sourceDetails || [],
+            }),
           });
-          
-          if (!writeBlogResponse.ok) {
-            const errorText = await writeBlogResponse.text();
-            throw new Error(`Failed to write blog: ${writeBlogResponse.status} ${writeBlogResponse.statusText}. ${errorText.substring(0, 200)}`);
+
+          if (!extractAnswerResponse.ok) {
+            const errorText = await extractAnswerResponse.text();
+            throw new Error(`Failed to extract answer: ${extractAnswerResponse.status} ${extractAnswerResponse.statusText}. ${errorText.substring(0, 200)}`);
           }
-          
-          const blogData = await writeBlogResponse.json();
-          steps.push({ step: "Blog post generated", status: "completed", data: blogData });
+
+          const answerData = await extractAnswerResponse.json();
+          steps.push({ step: "Answer extracted", status: "completed", data: answerData });
+
+          if (!answerData.hasPublicAnswer) {
+            // No confident, sourced answer - abort without writing or
+            // publishing anything. Mark the trend so it isn't re-queued.
+            steps.push({
+              step: "Skipped: no public answer found",
+              status: "completed",
+            });
+            if (websiteId) {
+              try {
+                pipelineTrendId =
+                  requestedTrendId ||
+                  (await findTrendIdForCelebrity(websiteId, celebrityName));
+                if (pipelineTrendId) {
+                  await query(
+                    `UPDATE trends SET skip_reason = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+                    ["no confident, sourced public answer found", pipelineTrendId]
+                  );
+                }
+              } catch (skipError) {
+                console.error("Failed to mark trend as skipped:", skipError);
+              }
+            }
+          } else {
+            // Step 4: Write Blog
+            steps.push({ step: "Generating blog post...", status: "in_progress" });
+            let writeBlogUrl = `${baseUrl}/api/write-blog?keyword=${encodeURIComponent(celebrityName)}`;
+            if (websiteId) {
+              writeBlogUrl += `&website_id=${encodeURIComponent(websiteId)}`;
+            }
+            const writeBlogResponse = await fetch(writeBlogUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Cookie: cookies,
+                "x-cron-secret": cronSecret,
+              },
+              body: JSON.stringify({
+                keyword: celebrityName,
+                content: combinedContent,
+                answer: answerData,
+              }),
+            });
+
+            if (!writeBlogResponse.ok) {
+              const errorText = await writeBlogResponse.text();
+              throw new Error(`Failed to write blog: ${writeBlogResponse.status} ${writeBlogResponse.statusText}. ${errorText.substring(0, 200)}`);
+            }
+
+            const blogData = await writeBlogResponse.json();
+            steps.push({ step: "Blog post generated", status: "completed", data: blogData });
 
           if (blogData.blog_post && blogData.blog_post.content) {
             // Step 5: Humanize
@@ -267,6 +321,7 @@ export async function POST(request) {
                   draftHtml: humanizedContent,
                   draftTitle: blogData.blog_post.title || celebrityName,
                   imageUrl: imageData.url || null,
+                  answer: answerData,
                 });
                 draftSaved = Boolean(saved);
                 steps.push({
@@ -299,6 +354,7 @@ export async function POST(request) {
                 keyword: celebrityName,
                 website_id: websiteId || null,
                 image_url: imageData.url || null, // Pass the image URL from image search
+                answer: answerData,
               }),
             });
             
@@ -369,6 +425,7 @@ export async function POST(request) {
                         content: humanizedContent,
                         slug: wpData.slug || null,
                         meta_description: wpData.meta_description || null,
+                        religion: answerData.religion || null,
                       }),
                     });
 
@@ -412,6 +469,7 @@ export async function POST(request) {
                 deferredPublish = true;
               }
             }
+          }
           }
         }
       }

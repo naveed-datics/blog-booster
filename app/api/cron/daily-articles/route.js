@@ -62,7 +62,14 @@ async function logRun(summary) {
 // (which all check for either a session cookie or that header) authorizes
 // without ever needing a login session.
 
-const DAILY_ARTICLE_LIMIT = 10;
+// Lowered from 10 to 3 per the content-quality checklist (Part A11): the
+// site was publishing ~4/day under a Google quality demotion with no
+// pre-publish gate. Realistic sustainable volume once every article is
+// answer-first, cited, and checklist-gated (wp-create-post now drafts
+// instead of publishing anything that fails the checklist) is 2-5/week for
+// one author - 3/day intentionally leaves headroom under that, since the
+// gate itself now also reduces how many of the 3 actually go live.
+const DAILY_ARTICLE_LIMIT = 3;
 const DAILY_REFRESH_LIMIT = 5; // stale-but-trending existing articles to refresh/day
 const TARGET_WEBSITE_ID = 1; // whatreligionisinfo.com
 

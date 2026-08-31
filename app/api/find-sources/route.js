@@ -329,6 +329,11 @@ export async function GET(request) {
       usedUrls.add(wikiCandidate.url);
     }
 
+    // Keeps the title/snippet Tavily already returned alongside each chosen
+    // URL, so downstream steps can build real inline citations instead of
+    // discarding this and being left with bare links.
+    const detailsByUrl = new Map(allCandidates.map((c) => [c.url, c]));
+
     // Then fill remaining slots with the highest-scoring non-Wikipedia
     // candidates, preferring one URL per domain so sources are genuinely
     // diverse (multiple pages from the same site don't add independent
@@ -364,12 +369,26 @@ export async function GET(request) {
       (c) => allSources.includes(c.url) && c.isPreferred
     ).length;
 
+    const sourceDetails = allSources.map((url) => {
+      const c = detailsByUrl.get(url);
+      return {
+        url,
+        title: c?.title || '',
+        snippet: c?.snippet || '',
+        domain: c?.domain || getDomain(url),
+      };
+    });
+
     console.log(`Find sources result for "${query}": ${allSources.length} sources (${preferredCount} from preferred/reputable domains)`, allSources);
 
     return NextResponse.json({
       keyword: query,
       wikipedia: wikiUrl,
       sources: allSources,
+      // {url, title, snippet, domain} per source - lets downstream steps
+      // (extract-answer, write-blog) cite specific claims instead of only
+      // having bare URLs with no idea what each one actually says.
+      sourceDetails,
       // Kept for backward compatibility with any older consumers.
       religionURL: selectedUrls[0] || '',
       religion: selectedUrls[1] || ''

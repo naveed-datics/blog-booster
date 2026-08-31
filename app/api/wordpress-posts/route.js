@@ -73,6 +73,7 @@ export async function POST(request) {
       content,
       slug,
       meta_description,
+      religion,
     } = body;
 
     // Validation
@@ -94,9 +95,9 @@ export async function POST(request) {
     if (existing.rows.length > 0) {
       // Update existing post
       const result = await query(
-        `UPDATE wordpress_posts 
-         SET post_title = $1, post_url = $2, image_url = $3, content = $4, slug = $5, meta_description = $6, updated_at = NOW()
-         WHERE website_id = $7 AND celebrity_name = $8 AND post_id = $9
+        `UPDATE wordpress_posts
+         SET post_title = $1, post_url = $2, image_url = $3, content = $4, slug = $5, meta_description = $6, religion = $7, updated_at = NOW()
+         WHERE website_id = $8 AND celebrity_name = $9 AND post_id = $10
          RETURNING *`,
         [
           post_title,
@@ -105,6 +106,7 @@ export async function POST(request) {
           content || null,
           slug || null,
           meta_description || null,
+          religion || null,
           parseInt(website_id),
           celebrity_name.trim(),
           parseInt(post_id),
@@ -120,9 +122,9 @@ export async function POST(request) {
 
     // Insert new post
     const result = await query(
-      `INSERT INTO wordpress_posts 
-       (website_id, celebrity_name, post_title, post_id, post_url, image_url, content, slug, meta_description)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO wordpress_posts
+       (website_id, celebrity_name, post_title, post_id, post_url, image_url, content, slug, meta_description, religion)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
         parseInt(website_id),
@@ -134,6 +136,7 @@ export async function POST(request) {
         content || null,
         slug || null,
         meta_description || null,
+        religion || null,
       ]
     );
 

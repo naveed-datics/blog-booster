@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { isAuthorized } from "@/lib/cronAuth";
 import { searchCelebrityUrl } from "@/lib/duplicateCheck";
+import {
+  generateSEOContent,
+  buildJsonLd,
+  appendPostFooter,
+  runPrePublishChecklist,
+} from "@/lib/seoContent";
 
 export const maxDuration = 300;
 
@@ -49,7 +55,7 @@ async function setRankMathMeta(postId, { title, description, focusKeyword }) {
 }
 
 // Adds internal links in BOTH directions between the new post and a small
-// random sample of existing posts:
+// sample of existing posts:
 //   - outbound: a "Related Reading" section appended to the new post,
 //     linking OUT to existing posts (topical relevance, better UX)
 //   - inbound: a short sentence appended to those existing posts, linking
@@ -58,23 +64,48 @@ async function setRankMathMeta(postId, { title, description, focusKeyword }) {
 // indexing: a brand-new page with zero inbound internal links is exactly
 // the kind of page that sits un-indexed, since Google discovers and
 // prioritizes crawling pages it can reach via links from pages it already
-// knows about. Random sampling (rather than always the same "most recent"
-// posts) spreads link equity around instead of concentrating it on
-// whichever posts happen to be newest at any given time.
-async function addInternalLinks(postId, postTitle, postLink, currentContent) {
+// knows about. Prefers posts about people confirmed to share the same
+// religion (genuinely topical, per Part B's "3-6 topically related people"
+// requirement) and falls back to a random sample only when no topical
+// match exists in the database yet.
+async function addInternalLinks(postId, postTitle, postLink, currentContent, religion) {
   const result = { outbound: false, inbound: 0, linked_to: [] };
 
   try {
-    const poolRes = await fetch(
-      `${WP_BASE}/posts?orderby=date&order=desc&per_page=30&exclude=${postId}&_fields=id,slug,title,link`,
-      { signal: AbortSignal.timeout(10000) }
-    );
-    if (!poolRes.ok) return result;
+    let chosen = [];
 
-    const pool = await poolRes.json();
-    if (!Array.isArray(pool) || pool.length === 0) return result;
+    if (religion) {
+      try {
+        const { query } = await import("@/lib/db");
+        const topical = await query(
+          `SELECT post_id, post_title, post_url FROM wordpress_posts
+           WHERE religion = $1 AND post_id != $2 AND post_url IS NOT NULL
+           ORDER BY created_at DESC
+           LIMIT 6`,
+          [religion, postId]
+        );
+        chosen = topical.rows
+          .filter((r) => r.post_url)
+          .map((r) => ({ id: r.post_id, title: { rendered: r.post_title }, link: r.post_url }));
+      } catch (topicalError) {
+        console.error("Error finding topically related posts:", topicalError);
+      }
+    }
 
-    const chosen = [...pool].sort(() => Math.random() - 0.5).slice(0, Math.min(2, pool.length));
+    if (chosen.length === 0) {
+      const poolRes = await fetch(
+        `${WP_BASE}/posts?orderby=date&order=desc&per_page=30&exclude=${postId}&_fields=id,slug,title,link`,
+        { signal: AbortSignal.timeout(10000) }
+      );
+      if (!poolRes.ok) return result;
+
+      const pool = await poolRes.json();
+      if (!Array.isArray(pool) || pool.length === 0) return result;
+
+      chosen = [...pool].sort(() => Math.random() - 0.5).slice(0, Math.min(3, pool.length));
+    } else {
+      chosen = chosen.slice(0, 6);
+    }
 
     // Outbound: append a Related Reading section to the new post.
     const outboundItems = chosen
@@ -126,24 +157,6 @@ async function addInternalLinks(postId, postTitle, postLink, currentContent) {
     console.error("Error adding internal links:", error);
     return result; // non-fatal - the post itself is already created successfully
   }
-}
-
-const SITE_URL = "https://whatreligionisinfo.com/";
-const AUTHOR_BIO_HTML =
-  "<h2>About the Author</h2>" +
-  "<p>Naveed is a Software and AI engineer based in Pakistan and the founder of " +
-  `<a href="${SITE_URL}">whatreligionisinfo.com</a>. ` +
-  "Articles are researched from published interviews, news coverage, and public statements, with sources cited throughout.</p>";
-
-const INTERNAL_LINK_HTML =
-  "<p>If you are interested in learning more about religion, please visit " +
-  `<a href="${SITE_URL}">whatreligionisinfo.com</a>.</p>`;
-
-function appendPostFooter(contentHtml) {
-  if (contentHtml.includes("About the Author")) {
-    return contentHtml;
-  }
-  return contentHtml + INTERNAL_LINK_HTML + AUTHOR_BIO_HTML;
 }
 
 // Helper function to slugify text
@@ -224,122 +237,6 @@ async function findImage(celebrityName, cookies = "", request = null) {
   }
 }
 
-// Generate SEO title and meta description using Azure OpenAI
-async function generateSEOContent(focusKeyword, title, postContent) {
-  let seoTitle = focusKeyword;
-  let metaDescription = `Discover ${title}'s religious background and beliefs. Learn more about ${focusKeyword}.`;
-
-  try {
-    // Get Azure OpenAI config
-    let azureApiKey = process.env.AZURE_OPENAI_API_KEY;
-    let azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
-    let azureDeploymentName = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
-    let azureApiVersion =
-      process.env.AZURE_OPENAI_API_VERSION || "2024-12-01-preview";
-
-    // Remove quotes if present
-    if (azureApiKey) azureApiKey = azureApiKey.replace(/^["']|["']$/g, "");
-    if (azureEndpoint)
-      azureEndpoint = azureEndpoint.replace(/^["']|["']$/g, "");
-    if (azureDeploymentName)
-      azureDeploymentName = azureDeploymentName.replace(/^["']|["']$/g, "");
-    if (azureApiVersion)
-      azureApiVersion = azureApiVersion.replace(/^["']|["']$/g, "");
-
-    const useAzure = azureApiKey && azureEndpoint && azureDeploymentName;
-
-    if (useAzure) {
-      const endpoint = azureEndpoint.replace(/\/$/, "");
-      const azureUrl = `${endpoint}/openai/deployments/${azureDeploymentName}/chat/completions?api-version=${azureApiVersion}`;
-
-      // Generate SEO Title following RankMath SEO guidelines
-      try {
-        const titleResponse = await fetch(azureUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "api-key": azureApiKey,
-          },
-          body: JSON.stringify({
-            messages: [
-              {
-                role: "system",
-                content: `You are an SEO assistant following RankMath SEO guidelines. Create one SEO-optimized title that:
-- Includes the focus keyword '${focusKeyword}' naturally
-- Is 50-60 characters long (optimal for search engines)
-- Is compelling and click-worthy
-- Does NOT include quotes or quotation marks
-- Does NOT wrap the title in quotes
-- Is written in title case
-Return only the title text, no quotes, no commentary.`,
-              },
-              {
-                role: "user",
-                content: title,
-              },
-            ],
-            temperature: 0.3,
-            max_tokens: 100,
-          }),
-        });
-
-        if (titleResponse.ok) {
-          const titleData = await titleResponse.json();
-          const candidate = titleData.choices?.[0]?.message?.content;
-          if (candidate && candidate.trim()) {
-            // Remove any quotes that might be in the response
-            seoTitle = candidate
-              .trim()
-              .replace(/^["']|["']$/g, "")
-              .trim();
-          }
-        }
-      } catch (error) {
-        console.error("Error generating SEO title:", error);
-      }
-
-      // Generate Meta Description
-      try {
-        const descResponse = await fetch(azureUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "api-key": azureApiKey,
-          },
-          body: JSON.stringify({
-            messages: [
-              {
-                role: "system",
-                content: `You are an SEO assistant. Write one meta description (150–160 chars) for '${focusKeyword}' make sure '${focusKeyword}' in description.`,
-              },
-              {
-                role: "user",
-                content: postContent.substring(0, 500), // small context
-              },
-            ],
-            temperature: 0.3,
-            max_tokens: 200,
-          }),
-        });
-
-        if (descResponse.ok) {
-          const descData = await descResponse.json();
-          const candidate = descData.choices?.[0]?.message?.content;
-          if (candidate && candidate.trim()) {
-            metaDescription = candidate.trim();
-          }
-        }
-      } catch (error) {
-        console.error("Error generating meta description:", error);
-      }
-    }
-  } catch (error) {
-    console.error("Error in SEO generation:", error);
-  }
-
-  return { seoTitle, metaDescription };
-}
-
 // GET endpoint for WordPress post creation
 export async function GET(request) {
   try {
@@ -369,8 +266,17 @@ export async function GET(request) {
 
     // Step 1: Extract/process input
     const title = keyword.trim();
-    const focusKeyword = `${title} religion`.trim();
-    const slugVal = slugify(focusKeyword);
+    let answer = null;
+    const answerParam = searchParams.get("answer");
+    if (answerParam) {
+      try {
+        answer = JSON.parse(answerParam);
+      } catch (e) {
+        console.error("Failed to parse answer query param:", e);
+      }
+    }
+    const focusKeyword = answer?.religion ? `${title} ${answer.religion}` : `${title} religion`;
+    const slugVal = slugify(`${title} religion`);
 
     // Final safety net: re-check for an existing article right here at the
     // actual publish gate, not just earlier in trend-search. This is what
@@ -384,8 +290,9 @@ export async function GET(request) {
       console.warn(`⚠️ Duplicate detected at publish time for "${title}" - existing article: ${duplicateUrl}. Publishing as draft instead of live.`);
     }
 
+    const publishedDate = new Date();
     const rawContent = postContent || "";
-    const contentHtml = appendPostFooter(rawContent);
+    const contentHtml = appendPostFooter(rawContent, publishedDate);
 
     const celebrityName = title;
 
@@ -399,16 +306,31 @@ export async function GET(request) {
 
     // Step 3: Generate SEO title & description
     const { seoTitle, metaDescription } = await generateSEOContent(
-      focusKeyword,
-      title,
+      celebrityName,
+      answer,
       postContent
     );
 
-    // The meta description is now stored properly via setRankMathMeta()
-    // below (Rank Math's own SEO description field), so it no longer needs
-    // to be duplicated into the visible article body as a leading
-    // paragraph - that read as formulaic/redundant to actual readers.
-    const postContentFinal = contentHtml;
+    // Step 3.5: Append JSON-LD (FAQPage/Article/Person) schema directly
+    // into the post content, and run the programmatically-verifiable
+    // subset of the pre-publish checklist.
+    const jsonLdScript = buildJsonLd({
+      celebrityName,
+      answer,
+      contentHtml,
+      postUrl: null,
+      seoTitle,
+      publishedDate: publishedDate.toISOString(),
+    });
+    const postContentFinal = contentHtml + jsonLdScript;
+
+    const checklist = runPrePublishChecklist(postContentFinal, { seoTitle });
+    if (!checklist.passed) {
+      console.warn(
+        `⚠️ Pre-publish checklist failed for "${title}": ${checklist.failures.join("; ")}. Publishing as draft instead of live.`
+      );
+    }
+    const forceDraft = Boolean(duplicateUrl) || !checklist.passed;
 
     const headersJson = {
       Authorization: WP_AUTH_HEADER,
@@ -540,7 +462,7 @@ export async function GET(request) {
     const postPayload = {
       title: seoTitle,
       content: postContentFinal,
-      status: duplicateUrl ? "draft" : "publish",
+      status: forceDraft ? "draft" : "publish",
       slug: slugVal,
       author: 2,
       featured_media: mediaId, // Required - post will not be created without it
@@ -581,14 +503,15 @@ export async function GET(request) {
       focusKeyword: focusKeyword,
     });
 
-    // Add internal links (both directions) between this new post and a
-    // random sample of existing posts - see addInternalLinks() for why
-    // this matters for indexing, not just topical relevance.
+    // Add internal links (both directions) between this new post and other
+    // posts about people who share the same confirmed religion where
+    // possible - see addInternalLinks() for why this matters for indexing.
     const internalLinks = await addInternalLinks(
       postId,
       seoTitle,
       postData.link,
-      postContentFinal
+      postContentFinal,
+      answer?.religion || null
     );
 
     // Verify featured_media was set in the post
@@ -655,6 +578,7 @@ export async function GET(request) {
             content: postContentFinal,
             slug: slugVal,
             meta_description: metaDescription,
+            religion: answer?.religion || null,
           }),
         });
 
@@ -674,7 +598,9 @@ export async function GET(request) {
       post_id: postId,
       is_likely_duplicate: Boolean(duplicateUrl),
       duplicate_of: duplicateUrl || null,
-      wp_post_status: duplicateUrl ? "draft" : "publish",
+      wp_post_status: forceDraft ? "draft" : "publish",
+      checklist_passed: checklist.passed,
+      checklist_failures: checklist.failures,
       rank_math_meta_saved: rankMathMetaSaved,
       internal_links: internalLinks,
       media_id: mediaId || null,
@@ -710,6 +636,7 @@ export async function POST(request) {
     const postContent = body.post_content || "";
     const keyword = body.keyword || "";
     const websiteId = body.website_id || null;
+    const answer = body.answer || null;
 
     if (!keyword.trim()) {
       return NextResponse.json(
@@ -727,8 +654,8 @@ export async function POST(request) {
 
     // Step 1: Extract/process input
     const title = keyword.trim();
-    const focusKeyword = `${title} religion`.trim();
-    const slugVal = slugify(focusKeyword);
+    const focusKeyword = answer?.religion ? `${title} ${answer.religion}` : `${title} religion`;
+    const slugVal = slugify(`${title} religion`);
 
     // Final safety net: re-check for an existing article right here at the
     // actual publish gate, not just earlier in trend-search. This is what
@@ -742,8 +669,9 @@ export async function POST(request) {
       console.warn(`⚠️ Duplicate detected at publish time for "${title}" - existing article: ${duplicateUrl}. Publishing as draft instead of live.`);
     }
 
+    const publishedDate = new Date();
     const rawContent = postContent || "";
-    const contentHtml = appendPostFooter(rawContent);
+    const contentHtml = appendPostFooter(rawContent, publishedDate);
 
     const celebrityName = title;
 
@@ -757,16 +685,31 @@ export async function POST(request) {
 
     // Step 3: Generate SEO title & description
     const { seoTitle, metaDescription } = await generateSEOContent(
-      focusKeyword,
-      title,
+      celebrityName,
+      answer,
       postContent
     );
 
-    // The meta description is now stored properly via setRankMathMeta()
-    // below (Rank Math's own SEO description field), so it no longer needs
-    // to be duplicated into the visible article body as a leading
-    // paragraph - that read as formulaic/redundant to actual readers.
-    const postContentFinal = contentHtml;
+    // Step 3.5: Append JSON-LD (FAQPage/Article/Person) schema directly
+    // into the post content, and run the programmatically-verifiable
+    // subset of the pre-publish checklist.
+    const jsonLdScript = buildJsonLd({
+      celebrityName,
+      answer,
+      contentHtml,
+      postUrl: null,
+      seoTitle,
+      publishedDate: publishedDate.toISOString(),
+    });
+    const postContentFinal = contentHtml + jsonLdScript;
+
+    const checklist = runPrePublishChecklist(postContentFinal, { seoTitle });
+    if (!checklist.passed) {
+      console.warn(
+        `⚠️ Pre-publish checklist failed for "${title}": ${checklist.failures.join("; ")}. Publishing as draft instead of live.`
+      );
+    }
+    const forceDraft = Boolean(duplicateUrl) || !checklist.passed;
 
     const headersJson = {
       Authorization: WP_AUTH_HEADER,
@@ -898,7 +841,7 @@ export async function POST(request) {
     const postPayload = {
       title: seoTitle,
       content: postContentFinal,
-      status: duplicateUrl ? "draft" : "publish",
+      status: forceDraft ? "draft" : "publish",
       slug: slugVal,
       author: 2,
       featured_media: mediaId, // Required - post will not be created without it
@@ -939,14 +882,15 @@ export async function POST(request) {
       focusKeyword: focusKeyword,
     });
 
-    // Add internal links (both directions) between this new post and a
-    // random sample of existing posts - see addInternalLinks() for why
-    // this matters for indexing, not just topical relevance.
+    // Add internal links (both directions) between this new post and other
+    // posts about people who share the same confirmed religion where
+    // possible - see addInternalLinks() for why this matters for indexing.
     const internalLinks = await addInternalLinks(
       postId,
       seoTitle,
       postData.link,
-      postContentFinal
+      postContentFinal,
+      answer?.religion || null
     );
 
     // Verify featured_media was set in the post
@@ -1013,6 +957,7 @@ export async function POST(request) {
             content: postContentFinal,
             slug: slugVal,
             meta_description: metaDescription,
+            religion: answer?.religion || null,
           }),
         });
 
@@ -1032,7 +977,9 @@ export async function POST(request) {
       post_id: postId,
       is_likely_duplicate: Boolean(duplicateUrl),
       duplicate_of: duplicateUrl || null,
-      wp_post_status: duplicateUrl ? "draft" : "publish",
+      wp_post_status: forceDraft ? "draft" : "publish",
+      checklist_passed: checklist.passed,
+      checklist_failures: checklist.failures,
       rank_math_meta_saved: rankMathMetaSaved,
       internal_links: internalLinks,
       media_id: mediaId || null,

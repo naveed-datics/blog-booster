@@ -68,21 +68,52 @@ function WriteBlogContent() {
     setBlogPost(null);
 
     try {
+      // write-blog now requires a confirmed, sourced answer object (it will
+      // no longer publish a page whose religion answer isn't confirmed) -
+      // run extract-answer first against the pasted content.
+      const extractResponse = await fetch("/api/extract-answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          celebrityName: keyword,
+          combinedContent: scrapedContent,
+          sourceDetails: [],
+        }),
+      });
+
+      if (!extractResponse.ok) {
+        const errorData = await extractResponse.json();
+        throw new Error(
+          errorData.message || errorData.error || "Failed to extract a sourced answer"
+        );
+      }
+
+      const answer = await extractResponse.json();
+      if (!answer.hasPublicAnswer) {
+        throw new Error(
+          "No confident, publicly-sourced religion answer was found in the provided content - this page should not be published."
+        );
+      }
+
       // Build URL with keyword and website_id if available
       let apiUrl = `/api/write-blog?keyword=${encodeURIComponent(keyword)}`;
       if (websiteId) {
         apiUrl += `&website_id=${encodeURIComponent(websiteId)}`;
       }
-      
+
       console.log("Calling write-blog API with URL:", apiUrl);
       console.log("Current websiteId state:", websiteId);
-      
+
       const response = await fetch(apiUrl, {
         method: "POST",
         headers: {
-          "Content-Type": "text/plain",
+          "Content-Type": "application/json",
         },
-        body: scrapedContent,
+        body: JSON.stringify({
+          keyword,
+          content: scrapedContent,
+          answer,
+        }),
       });
 
       if (!response.ok) {
