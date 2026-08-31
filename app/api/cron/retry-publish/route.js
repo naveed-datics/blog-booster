@@ -66,13 +66,35 @@ export async function GET(request) {
           post_content: draft.draft_html,
           keyword: celebrityName,
           website_id: websiteId,
-          image_url: draft.image_url || null,
           answer: draft.answer_json || null,
         }),
       });
 
       const errorText = wpResponse.ok ? "" : await wpResponse.text();
       const wpData = wpResponse.ok ? await wpResponse.json() : null;
+
+      if (wpResponse.ok && wpData?.status === "skipped") {
+        // wp-create-post declined to publish (duplicate or checklist
+        // failure) - nothing to retry, this is a terminal outcome for the
+        // draft, not a transient failure. status 200 + this error text
+        // doesn't match any retryable branch in isRetryablePublishError(),
+        // so schedulePublishRetry() marks the draft publish_failed
+        // (terminal) rather than scheduling another attempt.
+        await schedulePublishRetry({
+          websiteId,
+          celebrityName,
+          error: `skipped: ${wpData.skip_stage} - ${wpData.skip_detail}`,
+          status: 200,
+        });
+        results.push({
+          celebrity_name: celebrityName,
+          success: false,
+          skipped: true,
+          skip_stage: wpData.skip_stage,
+          skip_detail: wpData.skip_detail,
+        });
+        continue;
+      }
 
       if (!wpResponse.ok || wpData?.status !== "success") {
         const message =
@@ -92,7 +114,7 @@ export async function GET(request) {
         continue;
       }
 
-      const postUrl = postUrlFromWpData(wpData);
+      const postUrl = wpData.link || postUrlFromWpData(wpData);
       await markPublished({
         websiteId,
         celebrityName,
@@ -113,7 +135,7 @@ export async function GET(request) {
             post_title: wpData.title || draft.draft_title || celebrityName,
             post_id: wpData.post_id,
             post_url: postUrl,
-            image_url: wpData.image_url || draft.image_url || null,
+            image_url: wpData.image_url || null,
             content: draft.draft_html,
             slug: wpData.slug || null,
             meta_description: wpData.meta_description || null,

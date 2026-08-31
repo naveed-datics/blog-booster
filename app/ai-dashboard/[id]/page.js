@@ -542,16 +542,18 @@ export default function AIDashboardPage() {
       setGeneratedArticle(null);
       setArticleDialogOpen(true);
 
-      // Initialize all expected steps upfront - all start as pending (will show loading)
+      // Initialize all expected steps upfront - all start as pending (will show loading).
+      // Image search/attach is no longer a separate tracked step here - it
+      // now runs inside wp-create-post, only after the article has already
+      // passed the checklist and been published, to avoid spending an
+      // image-search API call on articles that get skipped before then.
       const initialSteps = [
         { step: "Found sources", status: "pending" },
-        { step: "Found images", status: "pending" },
         { step: "Fetched content", status: "pending" },
         { step: "Answer extracted", status: "pending" },
         { step: "Blog post generated", status: "pending" },
         { step: "Content humanized", status: "pending" },
         { step: "WordPress post created", status: "pending" },
-        { step: "Saved to database", status: "pending" },
       ];
       setGenerationSteps(initialSteps);
     }
@@ -578,8 +580,6 @@ export default function AIDashboardPage() {
         const stepMapping = {
           "Finding sources...": "Found sources",
           "Found sources": "Found sources",
-          "Searching for images...": "Found images",
-          "Found images": "Found images",
           "Fetching content from URLs...": "Fetched content",
           "Fetched content": "Fetched content",
           "Extracting sourced answer...": "Answer extracted",
@@ -591,17 +591,25 @@ export default function AIDashboardPage() {
           "Content humanized": "Content humanized",
           "Creating WordPress post...": "WordPress post created",
           "WordPress post created": "WordPress post created",
-          "Saving to database...": "Saved to database",
-          "Saved to database": "Saved to database",
+          "Skipped by publish gate": "WordPress post created",
         };
 
         // Process steps sequentially with delays to show updates one by one
         let currentIndex = 0;
 
+        // These step names represent an intentional, correct skip (no
+        // human review needed) rather than a real error or a real success -
+        // render them amber/"skipped" instead of green/"completed".
+        const SKIP_STEP_NAMES = new Set([
+          "Skipped: no public answer found",
+          "Skipped by publish gate",
+        ]);
+
         const processNextStep = () => {
           if (currentIndex < data.steps.length) {
             const apiStep = data.steps[currentIndex];
             const targetStepName = stepMapping[apiStep.step];
+            const isSkipStep = SKIP_STEP_NAMES.has(apiStep.step);
 
             if (targetStepName) {
               setGenerationSteps((prevSteps) => {
@@ -612,7 +620,16 @@ export default function AIDashboardPage() {
 
                 if (stepIndex !== -1) {
                   // Update existing step
-                  if (apiStep.status === "error") {
+                  if (isSkipStep) {
+                    updatedSteps[stepIndex] = {
+                      step: targetStepName,
+                      status: "skipped",
+                      error:
+                        data.skip_reason?.detail ||
+                        apiStep.error ||
+                        "Skipped - no article was published.",
+                    };
+                  } else if (apiStep.status === "error") {
                     // Immediately mark as error (red) - no delay
                     updatedSteps[stepIndex] = {
                       step: targetStepName,
@@ -681,25 +698,23 @@ export default function AIDashboardPage() {
             if (currentIndex < data.steps.length) {
               setTimeout(processNextStep, 400);
             } else if (!silent) {
-              // The pipeline can legitimately stop partway through (e.g. no
-              // confident, sourced public answer was found) - any step
-              // still "pending" at this point will never receive an update
-              // from data.steps, so it would otherwise spin forever. Resolve
-              // those explicitly instead of leaving the dialog stuck.
-              const wasSkipped = data.steps.some(
-                (s) => s.step === "Skipped: no public answer found"
-              );
+              // The pipeline can legitimately stop partway through (any
+              // automatic skip - no answer found, checklist failed,
+              // duplicate detected, source/content fetch failure) - any
+              // step still "pending" at this point will never receive an
+              // update from data.steps, so it would otherwise spin
+              // forever. Resolve those explicitly instead of leaving the
+              // dialog stuck.
+              const skipDetail = data.skip_reason
+                ? `Not reached - skipped (${data.skip_reason.stage}${
+                    data.skip_reason.detail ? `: ${data.skip_reason.detail}` : ""
+                  }).`
+                : undefined;
               setTimeout(() => {
                 setGenerationSteps((prev) =>
                   prev.map((s) =>
                     s.status === "pending" || s.status === "in_progress"
-                      ? {
-                          ...s,
-                          status: "skipped",
-                          error: wasSkipped
-                            ? "Not reached - no public religion answer was found in the sources, so no article was written."
-                            : undefined,
-                        }
+                      ? { ...s, status: "skipped", error: skipDetail }
                       : s
                   )
                 );
@@ -715,7 +730,7 @@ export default function AIDashboardPage() {
       if (data.success && data.result) {
         if (!silent) {
           setGeneratedArticle(data.result);
-          toast.success("Article generated successfully!");
+          toast.success("Article published successfully!");
         }
 
         // Refresh website data to update celebrityUrls and move item to "Complete" tab
@@ -723,19 +738,23 @@ export default function AIDashboardPage() {
 
         return { success: true, data: data.result };
       } else {
-        const wasSkipped = (data.steps || []).some(
-          (s) => s.step === "Skipped: no public answer found"
-        );
+        // Every automatic skip (no public answer found, checklist failed,
+        // detected duplicate, source/content fetch failures) is reported
+        // via data.skipped/data.skip_reason - none of these create a
+        // WordPress post or need manual review, they're just logged
+        // (trends.skip_reason) and excluded from future re-processing.
+        const wasSkipped = Boolean(data.skipped);
         if (!silent) {
           if (wasSkipped) {
-            toast.info(
-              "No article written - no confident, publicly-sourced religion answer was found for this name."
-            );
+            const reason = data.skip_reason
+              ? `${data.skip_reason.stage}${data.skip_reason.detail ? `: ${data.skip_reason.detail}` : ""}`
+              : "not published";
+            toast.info(`Skipped - ${reason}`);
           } else {
             toast.error(data.error || "Failed to generate article");
           }
         }
-        return { success: false, error: data.error, skipped: wasSkipped };
+        return { success: false, error: data.error, skipped: wasSkipped, skip_reason: data.skip_reason };
       }
     } catch (error) {
       console.error("Error generating article:", error);
