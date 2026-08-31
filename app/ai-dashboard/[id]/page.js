@@ -201,19 +201,32 @@ export default function AIDashboardPage() {
       // Process items one by one
       let succeeded = 0;
       let failed = 0;
+      let skipped = 0;
 
       for (const trend of itemsToProcess) {
         // Mark current item as processing
         setProcessingItems(new Set([trend.celebrity_name]));
-        
+
         try {
           console.log(`[Processing] Generating article for: ${trend.celebrity_name}`);
-          
+
           const result = await handleGenerateArticleRef.current(trend.celebrity_name, true);
-          
+
           if (result.success) {
             succeeded++;
             // Remove from selected items after successful processing
+            setSelectedItems(prev => {
+              const newSet = new Set(prev);
+              newSet.delete(trend.id);
+              return newSet;
+            });
+          } else if (result.skipped) {
+            // Not a failure - the pipeline correctly declined to publish
+            // because no confident, sourced public religion answer was
+            // found. Still remove it from the selection since it's handled
+            // (trend-search already marks it skip_reason so it won't
+            // re-queue).
+            skipped++;
             setSelectedItems(prev => {
               const newSet = new Set(prev);
               newSet.delete(trend.id);
@@ -236,12 +249,15 @@ export default function AIDashboardPage() {
       setProcessingItems(new Set());
 
       // Show result summary
-      if (succeeded > 0 && failed === 0) {
-        toast.success(`Successfully processed ${succeeded} article(s)`);
-      } else if (succeeded > 0 && failed > 0) {
-        toast.warning(`Processed ${succeeded} article(s), ${failed} failed`);
-      } else if (failed > 0) {
-        toast.error(`Failed to process ${failed} article(s)`);
+      const parts = [];
+      if (succeeded > 0) parts.push(`${succeeded} published`);
+      if (skipped > 0) parts.push(`${skipped} skipped (no public answer found)`);
+      if (failed > 0) parts.push(`${failed} failed`);
+
+      if (failed > 0) {
+        toast.warning(parts.join(", ") || "No items processed");
+      } else if (succeeded > 0 || skipped > 0) {
+        toast.success(parts.join(", "));
       }
 
       // Refresh the trending list
@@ -531,6 +547,7 @@ export default function AIDashboardPage() {
         { step: "Found sources", status: "pending" },
         { step: "Found images", status: "pending" },
         { step: "Fetched content", status: "pending" },
+        { step: "Answer extracted", status: "pending" },
         { step: "Blog post generated", status: "pending" },
         { step: "Content humanized", status: "pending" },
         { step: "WordPress post created", status: "pending" },
@@ -565,6 +582,9 @@ export default function AIDashboardPage() {
           "Found images": "Found images",
           "Fetching content from URLs...": "Fetched content",
           "Fetched content": "Fetched content",
+          "Extracting sourced answer...": "Answer extracted",
+          "Answer extracted": "Answer extracted",
+          "Skipped: no public answer found": "Answer extracted",
           "Generating blog post...": "Blog post generated",
           "Blog post generated": "Blog post generated",
           "Humanizing content...": "Content humanized",
@@ -660,6 +680,30 @@ export default function AIDashboardPage() {
             // Process next step after a short delay (400ms) to show progression
             if (currentIndex < data.steps.length) {
               setTimeout(processNextStep, 400);
+            } else if (!silent) {
+              // The pipeline can legitimately stop partway through (e.g. no
+              // confident, sourced public answer was found) - any step
+              // still "pending" at this point will never receive an update
+              // from data.steps, so it would otherwise spin forever. Resolve
+              // those explicitly instead of leaving the dialog stuck.
+              const wasSkipped = data.steps.some(
+                (s) => s.step === "Skipped: no public answer found"
+              );
+              setTimeout(() => {
+                setGenerationSteps((prev) =>
+                  prev.map((s) =>
+                    s.status === "pending" || s.status === "in_progress"
+                      ? {
+                          ...s,
+                          status: "skipped",
+                          error: wasSkipped
+                            ? "Not reached - no public religion answer was found in the sources, so no article was written."
+                            : undefined,
+                        }
+                      : s
+                  )
+                );
+              }, 500);
             }
           }
         };
@@ -679,10 +723,19 @@ export default function AIDashboardPage() {
 
         return { success: true, data: data.result };
       } else {
+        const wasSkipped = (data.steps || []).some(
+          (s) => s.step === "Skipped: no public answer found"
+        );
         if (!silent) {
-          toast.error(data.error || "Failed to generate article");
+          if (wasSkipped) {
+            toast.info(
+              "No article written - no confident, publicly-sourced religion answer was found for this name."
+            );
+          } else {
+            toast.error(data.error || "Failed to generate article");
+          }
         }
-        return { success: false, error: data.error };
+        return { success: false, error: data.error, skipped: wasSkipped };
       }
     } catch (error) {
       console.error("Error generating article:", error);
@@ -1636,6 +1689,7 @@ export default function AIDashboardPage() {
                       "Found sources": "Resources Found",
                       "Found images": "Image Searched",
                       "Fetched content": "Content Retrieved",
+                      "Answer extracted": "Sourced Answer Confirmed",
                       "Blog post generated": "Article Created",
                       "Content humanized": "Content Humanized",
                       "WordPress post created": "Publishing",
@@ -1657,6 +1711,8 @@ export default function AIDashboardPage() {
                           ? "bg-blue-50 dark:bg-blue-900/20 border-blue-300 dark:border-blue-700 text-blue-800 dark:text-blue-200"
                           : step.status === "error"
                           ? "bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-700 text-red-800 dark:text-red-200"
+                          : step.status === "skipped"
+                          ? "bg-amber-50 dark:bg-amber-900/20 border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-200"
                           : step.status === "pending"
                           ? "bg-gray-100 dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400"
                           : "bg-gray-50 dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300"
@@ -1671,6 +1727,9 @@ export default function AIDashboardPage() {
                         )}
                         {step.status === "error" && (
                           <span className="text-xl">❌</span>
+                        )}
+                        {step.status === "skipped" && (
+                          <span className="text-xl">⏭️</span>
                         )}
                         {step.status === "pending" && (
                           <RefreshCw className="h-5 w-5 animate-spin text-gray-500 dark:text-gray-400" />
@@ -1688,7 +1747,13 @@ export default function AIDashboardPage() {
                           {formatStepName(step.step)}
                         </p>
                         {step.error && (
-                          <p className="text-xs mt-1 opacity-75 text-red-600 dark:text-red-400">
+                          <p
+                            className={`text-xs mt-1 opacity-75 ${
+                              step.status === "skipped"
+                                ? "text-amber-700 dark:text-amber-400"
+                                : "text-red-600 dark:text-red-400"
+                            }`}
+                          >
                             {step.error}
                           </p>
                         )}
