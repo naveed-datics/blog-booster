@@ -64,7 +64,7 @@ export async function POST(request) {
     }
 
     const body = await request.json();
-    const { websiteId, limit = 5 } = body;
+    const { websiteId, limit = 5, updateLimit = 2 } = body;
 
     if (!websiteId) {
       return NextResponse.json(
@@ -73,9 +73,30 @@ export async function POST(request) {
       );
     }
 
-    console.log(`Auto-generating articles for website_id: ${websiteId}, limit: ${limit}`);
+    console.log(`Auto-generating articles for website_id: ${websiteId}, new limit: ${limit}, update limit: ${updateLimit}`);
 
     await ensureArticleDraftsTable();
+
+    // Update queue: existing persons with pipeline_action (light-update, full-rewrite, revive-draft)
+    const updateTrends = await query(
+      `SELECT id, celebrity_name, url, pipeline_action
+       FROM trends
+       WHERE website_id = $1
+         AND pipeline_action IN ('light-update', 'full-rewrite', 'revive-draft')
+         AND skip_reason IS NULL
+         AND url IS NOT NULL AND trim(url) <> ''
+         AND updated_at >= NOW() - INTERVAL '14 days'
+       ORDER BY
+         CASE pipeline_action
+           WHEN 'light-update' THEN 1
+           WHEN 'full-rewrite' THEN 2
+           WHEN 'revive-draft' THEN 3
+           ELSE 4
+         END,
+         created_at ASC
+       LIMIT $2`,
+      [parseInt(websiteId), parseInt(updateLimit) > 0 ? parseInt(updateLimit) : 5]
+    );
 
     // Get ONLY trends from Processing queue (items without URLs) that do
     // not already have a saved draft. Drafts are published by the
@@ -104,16 +125,18 @@ export async function POST(request) {
       [parseInt(websiteId), parseInt(limit) > 0 ? parseInt(limit) : 1000]
     );
 
-    if (trendsResult.rows.length === 0) {
+    const allTrends = [...updateTrends.rows, ...trendsResult.rows];
+
+    if (allTrends.length === 0) {
       return NextResponse.json({
         success: true,
-        message: "No trends in processing queue",
+        message: "No trends in processing or update queue",
         processed: 0,
         results: [],
       });
     }
 
-    console.log(`Found ${trendsResult.rows.length} trends to process`);
+    console.log(`Found ${updateTrends.rows.length} update trends + ${trendsResult.rows.length} new trends`);
 
     const baseUrl = getBaseUrl(request);
     const cookies = request.headers.get("cookie") || "";
@@ -126,7 +149,7 @@ export async function POST(request) {
     console.log(`Using base URL: ${baseUrl}`);
 
     // Process each trend one by one (ONLY Processing tab items - no URLs)
-    for (const trend of trendsResult.rows) {
+    for (const trend of allTrends) {
       if (quotaExhausted) {
         console.log(`⏹️ Stopping batch early - quota exhausted (${quotaExhaustedReason}). Remaining items left untouched for the next run.`);
         break;
@@ -139,13 +162,13 @@ export async function POST(request) {
 
       const celebrityName = trend.celebrity_name;
 
-      // Double-check: This item should NOT have a URL (Processing tab only)
-      if (trend.url && trend.url.trim() !== '') {
-        console.log(`⚠️ Skipping ${celebrityName} - has URL (should be in Complete/Update tab, not Processing)`);
+      // Processing tab items should NOT have a URL unless they're update-queue rows
+      if (trend.url && trend.url.trim() !== '' && !trend.pipeline_action) {
+        console.log(`⚠️ Skipping ${celebrityName} - has URL without pipeline_action`);
         continue;
       }
       
-      console.log(`[Processing Queue] Generating article for: ${celebrityName} (Processing tab item - no URL)`);
+      console.log(`[Queue] Generating for: ${celebrityName} (action: ${trend.pipeline_action || 'create-new'})`);
 
       try {
         // Call the generate-article API internally
@@ -160,6 +183,7 @@ export async function POST(request) {
             celebrityName,
             websiteId: websiteId,
             trendId: trend.id,
+            pipelineActionOverride: trend.pipeline_action || null,
           }),
         });
 
@@ -293,7 +317,7 @@ export async function POST(request) {
 
     return NextResponse.json({
       success: true,
-      processed: trendsResult.rows.length,
+      processed: allTrends.length,
       attempted: results.length,
       succeeded: successCount,
       deferred_publish: deferredCount,

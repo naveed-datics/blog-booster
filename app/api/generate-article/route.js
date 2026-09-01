@@ -7,7 +7,14 @@ import {
   schedulePublishRetry,
 } from "@/lib/articleDrafts";
 import { getCronBaseUrl } from "@/lib/productionBaseUrl";
+import { lookupPerson } from "@/lib/personLookup";
+import { resolveAction, shouldRunCreateNewGates } from "@/lib/personPageRouter";
+import { assertPublishQuota } from "@/lib/publishQuota";
+import { runPipelineGates } from "@/lib/pipelineGates";
+import { queueForReview } from "@/lib/reviewQueue";
+import { loadRecoveryLoosenedFromDb } from "@/lib/gscRecoverySignal";
 import { markTrendSkipped, SKIP_STAGE } from "@/lib/skipReason";
+import { query } from "@/lib/db";
 
 export const maxDuration = 300;
 
@@ -58,7 +65,14 @@ export async function POST(request) {
     }
 
     const body = await request.json();
-    const { celebrityName, websiteId, trendId: requestedTrendId } = body;
+    const {
+      celebrityName,
+      websiteId,
+      trendId: requestedTrendId,
+      bulkRemediation = false,
+      pipelineActionOverride = null,
+      skipGates = false,
+    } = body;
 
     if (!celebrityName || !celebrityName.trim()) {
       return NextResponse.json(
@@ -91,6 +105,19 @@ export async function POST(request) {
       return pipelineTrendId;
     }
 
+    async function queueReview(failedGate, gateDetail, proposedAction) {
+      const trendId = await resolveTrendId();
+      await queueForReview({
+        websiteId,
+        trendId,
+        celebrityName,
+        failedGate,
+        gateDetail,
+        proposedAction,
+      });
+      skippedResult = { stage: "review_queue", detail: failedGate, gateDetail };
+    }
+
     async function skip(stage, detail) {
       const trendId = await resolveTrendId();
       await markTrendSkipped({ trendId, stage, detail });
@@ -98,6 +125,81 @@ export async function POST(request) {
     }
 
     try {
+      if (websiteId) {
+        await loadRecoveryLoosenedFromDb(websiteId);
+      }
+
+      // Step 0: Person lookup + router
+      steps.push({ step: "Person lookup...", status: "in_progress" });
+      const lookup = websiteId
+        ? await lookupPerson(websiteId, celebrityName)
+        : { match: "none" };
+      const resolved = pipelineActionOverride
+        ? { action: pipelineActionOverride, postId: lookup.postId, reason: "override" }
+        : resolveAction(lookup);
+      steps.push({
+        step: "Router action resolved",
+        status: "completed",
+        data: { lookup, resolved },
+      });
+
+      const quota = await assertPublishQuota(websiteId, resolved.action, {
+        bulkRemediation,
+      });
+      if (!quota.allowed) {
+        steps.push({ step: "Quota deferred", status: "completed", data: quota });
+        return NextResponse.json({
+          success: false,
+          deferred: true,
+          defer_reason: quota.reason,
+          pipeline_action: resolved.action,
+          celebrityName,
+          steps,
+        });
+      }
+
+      if (resolved.action === "consolidate") {
+        steps.push({
+          step: "Consolidate required",
+          status: "completed",
+          data: { canonical: resolved.canonical, duplicate: resolved.duplicate },
+        });
+        await queueReview("consolidate_pending", resolved, "consolidate");
+        throw { handled: true };
+      }
+
+      if (shouldRunCreateNewGates(resolved) && !skipGates) {
+        let gateEvidence = null;
+        const trendId = await resolveTrendId();
+        if (trendId) {
+          const tr = await query(
+            `SELECT gate_evidence FROM trends WHERE id = $1`,
+            [trendId]
+          );
+          gateEvidence = tr.rows[0]?.gate_evidence || null;
+        }
+        const gates = await runPipelineGates(celebrityName, {
+          gateEvidence: gateEvidence || undefined,
+        });
+        steps.push({ step: "Pipeline gates", status: "completed", data: gates });
+        if (!gates.passed) {
+          await queueForReview({
+            websiteId,
+            trendId: await resolveTrendId(),
+            celebrityName,
+            failedGate: gates.failures[0]?.gate || "gates",
+            gateDetail: { failures: gates.failures, evidence: gates.evidence },
+            spikeTier: gates.spikeTier,
+            proposedAction: resolved.action,
+          });
+          skippedResult = { stage: "review_queue", detail: gates.failures };
+          throw { handled: true };
+        }
+      }
+
+      const pipelineAction = resolved.action;
+      const existingPostId = resolved.postId || lookup.postId;
+
       // Step 1: Find Sources
       steps.push({ step: "Finding sources...", status: "in_progress" });
       const findSourcesResponse = await fetch(
@@ -211,6 +313,16 @@ export async function POST(request) {
         throw { handled: true };
       }
 
+      let humanizedContent = "";
+      let blogTitle = celebrityName;
+
+      if (pipelineAction === "light-update") {
+        steps.push({
+          step: "Light update — skipping full write",
+          status: "completed",
+        });
+        humanizedContent = "";
+      } else {
       // Step 4: Write Blog
       steps.push({ step: "Generating blog post...", status: "in_progress" });
       let writeBlogUrl = `${baseUrl}/api/write-blog?keyword=${encodeURIComponent(celebrityName)}`;
@@ -273,8 +385,12 @@ export async function POST(request) {
         data: humanizedData,
       });
 
-      const humanizedContent = humanizedData.humanized_html || blogData.blog_post.content;
+      const humanizedContentInner = humanizedData.humanized_html || blogData.blog_post.content;
+      humanizedContent = humanizedContentInner;
+      blogTitle = blogData.blog_post.title || celebrityName;
+      }
 
+      if (pipelineAction !== "light-update") {
       // Persist the finished article before WordPress so a 504/500 on post
       // create can retry publish without re-running sources, extraction,
       // write-blog, or humanize. No image is attached yet - that only
@@ -288,7 +404,7 @@ export async function POST(request) {
             celebrityName,
             trendId: pipelineTrendId,
             draftHtml: humanizedContent,
-            draftTitle: blogData.blog_post.title || celebrityName,
+            draftTitle: blogTitle,
             imageUrl: null,
             answer: answerData,
           });
@@ -306,13 +422,9 @@ export async function POST(request) {
           });
         }
       }
+      }
 
-      // Step 6: Create WordPress Post. wp-create-post now runs the
-      // pre-publish checklist and duplicate check itself, and returns a
-      // { status: "skipped" } result (never creating a WP post) when either
-      // fails - no draft is left behind for review. If it passes, the post
-      // is created directly as "publish" and the image is searched for and
-      // attached only after that succeeds.
+      // Step 6: Create or update WordPress post
       steps.push({ step: "Creating WordPress post...", status: "in_progress" });
       const wpUrl = `${baseUrl}/api/wp-create-post`;
       const wpResponse = await fetch(wpUrl, {
@@ -327,6 +439,9 @@ export async function POST(request) {
           keyword: celebrityName,
           website_id: websiteId || null,
           answer: answerData,
+          pipeline_action: pipelineAction,
+          post_id: existingPostId || null,
+          bulk_remediation: bulkRemediation,
         }),
       });
 
@@ -377,6 +492,24 @@ export async function POST(request) {
           if (wpData.status === "success") {
             const postUrl = wpData.link || (wpData.slug ? `https://whatreligionisinfo.com/${wpData.slug}/` : null);
 
+            if (websiteId && pipelineAction) {
+              try {
+                await query(
+                  `UPDATE trends SET pipeline_action = $1, url = COALESCE($2, url), updated_at = NOW()
+                   WHERE website_id = $3 AND celebrity_name = $4 AND id = COALESCE($5, id)`,
+                  [
+                    pipelineAction,
+                    postUrl,
+                    parseInt(websiteId),
+                    celebrityName,
+                    pipelineTrendId,
+                  ]
+                );
+              } catch (e) {
+                console.error("Failed to record pipeline_action:", e);
+              }
+            }
+
             if (websiteId) {
               try {
                 await markPublished({
@@ -391,7 +524,7 @@ export async function POST(request) {
             }
 
             finalResult = {
-              title: blogData.blog_post.title || celebrityName,
+              title: blogTitle,
               content: humanizedContent,
               imageUrl: wpData.image_url || null,
               sources: sourcesData,

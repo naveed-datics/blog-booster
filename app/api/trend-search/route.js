@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { query } from '@/lib/db';
-import { searchCelebrityUrl } from '@/lib/duplicateCheck';
+import { lookupPerson } from '@/lib/personLookup';
+import { resolveAction } from '@/lib/personPageRouter';
+import { runPipelineGates } from '@/lib/pipelineGates';
 
 // Helper function to get rising trends using SerpAPI (equivalent to get_rising_trends)
 async function getRisingTrends(searchQuery = 'religion') {
@@ -262,19 +264,56 @@ async function saveTrendsToDatabase(searchQuery, trendsResult, celebList, result
         const screenResult = topicScreen[cleanCelebName];
         const gatedOut = screenResult && screenResult.allow === false;
 
+        let pipelineAction = null;
+        let existingUrl = result.URL || null;
+        let gateEvidenceJson = null;
+
+        if (websiteId && !gatedOut) {
+          try {
+            const lookup = await lookupPerson(websiteId, cleanCelebName);
+            const resolved = resolveAction(lookup);
+            pipelineAction = resolved.action;
+            if (lookup.url) existingUrl = lookup.url;
+
+            if (resolved.action === 'create-new') {
+              const gates = await runPipelineGates(cleanCelebName);
+              gateEvidenceJson = gates.evidence;
+              if (!gates.passed) {
+                await query(
+                  `INSERT INTO review_queue
+                    (website_id, celebrity_name, failed_gate, gate_detail, spike_tier, proposed_action, status)
+                   VALUES ($1, $2, $3, $4, $5, $6, 'pending')`,
+                  [
+                    websiteId,
+                    cleanCelebName,
+                    gates.failures[0]?.gate || 'gates',
+                    JSON.stringify({ failures: gates.failures, evidence: gates.evidence }),
+                    gates.spikeTier,
+                    resolved.action,
+                  ]
+                );
+              }
+            }
+          } catch (lookupErr) {
+            console.error(`lookupPerson failed for ${cleanCelebName}:`, lookupErr);
+          }
+        }
+
         try {
           await query(
-            `INSERT INTO trends (search_query, trend_text, celebrity_name, trend_value, url, website_result, website_id, skip_reason)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            `INSERT INTO trends (search_query, trend_text, celebrity_name, trend_value, url, website_result, website_id, skip_reason, pipeline_action, gate_evidence)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
             [
               searchQuery,
               formattedTrend,
               cleanCelebName,
               rawTrend.value || null,
-              result.URL || null,
+              existingUrl,
               result.website_result || null,
               websiteId || null,
               gatedOut ? `topic-gated: ${screenResult.reason || 'not a fit for this site'}` : null,
+              pipelineAction,
+              gateEvidenceJson ? JSON.stringify(gateEvidenceJson) : null,
             ]
           );
           if (gatedOut) {
@@ -605,23 +644,31 @@ export async function GET(request) {
     const results = [];
     for (let i = 0; i < trendsResult.raw.length; i++) {
       const celeb = celebList[i];
-      if (celeb) {
-        const wpResult = await searchCelebrityUrl(celeb);
-        
-        if (wpResult) {
+      if (celeb && websiteId) {
+        const lookup = await lookupPerson(websiteId, celeb);
+        const resolved = resolveAction(lookup);
+
+        if (lookup.match !== 'none' && lookup.url) {
           results.push({
             celebrity: celeb,
             Title: celeb,
-            URL: wpResult
+            URL: lookup.url,
+            pipeline_action: resolved.action,
           });
         } else {
           results.push({
             celebrity: celeb,
-            website_result: 'no data'
+            website_result: 'no data',
+            pipeline_action: resolved.action,
           });
         }
 
-        console.log(`WordPress result for ${celeb}:`, wpResult);
+        console.log(`Person lookup for ${celeb}:`, lookup.match, resolved.action);
+      } else if (celeb) {
+        results.push({
+          celebrity: celeb,
+          website_result: 'no data',
+        });
       } else {
         // Add empty result for null celebrity
         results.push({

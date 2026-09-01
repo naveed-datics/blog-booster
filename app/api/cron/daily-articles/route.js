@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { query } from "@/lib/db";
 import { isInvocationTimeout } from "@/lib/articlePipeline";
-import { getCronBaseUrl } from "@/lib/productionBaseUrl";
+import { getDailyNewLimit, getDailyUpdateLimit } from "@/lib/pipelineConfig";
+import { loadRecoveryLoosenedFromDb } from "@/lib/gscRecoverySignal";
 
 export const maxDuration = 300;
 
@@ -62,15 +63,13 @@ async function logRun(summary) {
 // (which all check for either a session cookie or that header) authorizes
 // without ever needing a login session.
 
-// Lowered from 10 to 3 per the content-quality checklist (Part A11): the
-// site was publishing ~4/day under a Google quality demotion with no
-// pre-publish gate. Realistic sustainable volume once every article is
-// answer-first, cited, and checklist-gated (wp-create-post now drafts
-// instead of publishing anything that fails the checklist) is 2-5/week for
-// one author - 3/day intentionally leaves headroom under that, since the
-// gate itself now also reduces how many of the 3 actually go live.
-const DAILY_ARTICLE_LIMIT = 3;
-const DAILY_REFRESH_LIMIT = 5; // stale-but-trending existing articles to refresh/day
+// Recovery-aware limits (see lib/pipelineConfig.js + lib/publishQuota.js).
+function getDailyLimits() {
+  return {
+    newLimit: getDailyNewLimit(),
+    updateLimit: getDailyUpdateLimit(),
+  };
+}
 const TARGET_WEBSITE_ID = 1; // whatreligionisinfo.com
 
 // Hardcoded on purpose - do NOT derive this from the request's host
@@ -130,6 +129,9 @@ export async function GET(request) {
   };
 
   try {
+    await loadRecoveryLoosenedFromDb(TARGET_WEBSITE_ID);
+    const { newLimit, updateLimit } = getDailyLimits();
+
     // Step 1: pull fresh trending celebrities into the processing queue.
     const trendSearchUrl = `${baseUrl}/api/trend-search?q=religion&website_id=${TARGET_WEBSITE_ID}`;
     const trendResponse = await fetch(trendSearchUrl, {
@@ -154,7 +156,8 @@ export async function GET(request) {
       },
       body: JSON.stringify({
         websiteId: TARGET_WEBSITE_ID,
-        limit: DAILY_ARTICLE_LIMIT,
+        limit: newLimit,
+        updateLimit,
       }),
     });
 
@@ -206,12 +209,13 @@ export async function GET(request) {
       summary.retry_publish = await parseJsonOrThrow(retryResponse, "retry-publish");
     }
 
-    // Step 3: refresh existing articles that are both currently trending
-    // again AND stale, so that search interest we'd otherwise waste (the
-    // duplicate check in step 1 skips writing a new article for these)
-    // still gets captured. No separate reindex call needed here - Rank
-    // Math's Instant Indexing module already auto-submits updated URLs.
-    const refreshUrl = `${baseUrl}/api/update-stale-articles?website_id=${TARGET_WEBSITE_ID}&limit=${DAILY_REFRESH_LIMIT}`;
+    // Step 3: update-stale-articles deprecated — trend-driven updates use personPageRouter via generate-article.
+    summary.refresh_stale = {
+      skipped: true,
+      reason: "deprecated; use pipeline router light-update/full-rewrite",
+    };
+    /*
+    const refreshUrl = `${baseUrl}/api/update-stale-articles?website_id=${TARGET_WEBSITE_ID}&limit=${updateLimit}`;
     const refreshResponse = await fetch(refreshUrl, {
       headers: { "x-cron-secret": cronSecret },
     });
@@ -228,9 +232,7 @@ export async function GET(request) {
           `update-stale-articles failed: ${refreshResponse.status} ${errorText.substring(0, 300)}`
         );
       }
-    } else {
-      summary.refresh_stale = await parseJsonOrThrow(refreshResponse, "update-stale-articles");
-    }
+    */
   } catch (error) {
     console.error("[cron/daily-articles] Error:", error);
     summary.error = error.message;

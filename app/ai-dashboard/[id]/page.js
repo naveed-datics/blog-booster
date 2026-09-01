@@ -74,6 +74,9 @@ export default function AIDashboardPage() {
   const [cronLogs, setCronLogs] = useState([]);
   const [cronLogsLoading, setCronLogsLoading] = useState(false);
   const [expandedLogId, setExpandedLogId] = useState(null);
+  const [reviewItems, setReviewItems] = useState([]);
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [publishQuota, setPublishQuota] = useState(null);
 
   // Ref to hold handleGenerateArticle to avoid circular dependency
   const handleGenerateArticleRef = useRef(null);
@@ -85,6 +88,50 @@ export default function AIDashboardPage() {
       fetchWebsiteData();
     }
   }, [status, websiteId, router]);
+
+  const fetchReviewQueue = useCallback(async () => {
+    if (!websiteId) return;
+    setReviewLoading(true);
+    try {
+      const res = await fetch(`/api/review-queue?website_id=${websiteId}`);
+      const data = await res.json();
+      if (res.ok) {
+        setReviewItems(data.items || []);
+        setPublishQuota(data.quota || null);
+      } else {
+        toast.error(data.error || "Failed to load review queue");
+      }
+    } catch {
+      toast.error("Failed to load review queue");
+    } finally {
+      setReviewLoading(false);
+    }
+  }, [websiteId]);
+
+  useEffect(() => {
+    if (status === "authenticated" && websiteId) {
+      fetchReviewQueue();
+    }
+  }, [status, websiteId, fetchReviewQueue]);
+
+  const handleReviewAction = async (id, action) => {
+    try {
+      const res = await fetch("/api/review-queue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, action }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast.success(action === "approve" ? "Approved for processing" : "Rejected");
+        fetchReviewQueue();
+      } else {
+        toast.error(data.error || "Action failed");
+      }
+    } catch {
+      toast.error("Action failed");
+    }
+  };
 
   const fetchCronLogs = useCallback(async () => {
     if (!websiteId) return;
@@ -1066,6 +1113,7 @@ export default function AIDashboardPage() {
               <TabsTrigger value="processing">Processing</TabsTrigger>
               <TabsTrigger value="update">Update</TabsTrigger>
               <TabsTrigger value="complete">Complete</TabsTrigger>
+              <TabsTrigger value="review">Review</TabsTrigger>
               <TabsTrigger value="cron-logs">Cron Logs</TabsTrigger>
             </TabsList>
 
@@ -1457,6 +1505,81 @@ export default function AIDashboardPage() {
                   </div>
                 );
               })()}
+            </TabsContent>
+
+            <TabsContent value="review">
+              <div className="flex justify-between items-center mb-3">
+                <div>
+                  <p className="text-sm text-muted-foreground">
+                    Items that failed pipeline gates — approve to run generate-article with override.
+                  </p>
+                  {publishQuota && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Quota today: {publishQuota.new_remaining}/{publishQuota.new_limit} new,{" "}
+                      {publishQuota.update_remaining}/{publishQuota.update_limit} updates
+                    </p>
+                  )}
+                </div>
+                <Button
+                  onClick={fetchReviewQueue}
+                  disabled={reviewLoading}
+                  variant="outline"
+                  size="sm"
+                  className="flex items-center gap-2"
+                >
+                  <RefreshCw className={`h-4 w-4 ${reviewLoading ? "animate-spin" : ""}`} />
+                  Refresh
+                </Button>
+              </div>
+
+              {reviewItems.length === 0 ? (
+                <p className="text-center py-8 text-muted-foreground text-sm">
+                  {reviewLoading ? "Loading..." : "No items pending review."}
+                </p>
+              ) : (
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Failed gate</TableHead>
+                        <TableHead>Proposed action</TableHead>
+                        <TableHead>Date</TableHead>
+                        <TableHead className="text-right">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {reviewItems.map((item) => (
+                        <TableRow key={item.id}>
+                          <TableCell className="font-medium">{item.celebrity_name}</TableCell>
+                          <TableCell>{item.failed_gate}</TableCell>
+                          <TableCell>{item.proposed_action || "—"}</TableCell>
+                          <TableCell>
+                            {new Date(item.created_at).toLocaleDateString()}
+                          </TableCell>
+                          <TableCell className="text-right space-x-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleReviewAction(item.id, "approve")}
+                            >
+                              Approve
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-red-600"
+                              onClick={() => handleReviewAction(item.id, "reject")}
+                            >
+                              Reject
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
             </TabsContent>
 
             <TabsContent value="cron-logs">

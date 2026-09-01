@@ -14,6 +14,10 @@
     "migrate:gsc": "node lib/migrations/run-gsc-migration.mjs",
     "migrate:cron-logs": "node lib/migrations/run-cron-run-logs-migration.mjs",
     "migrate:article-drafts": "node lib/migrations/run-article-drafts-migration.mjs",
+    "migrate:person-index": "node lib/migrations/run-person-index-migration.mjs",
+    "migrate:pipeline-recovery": "node lib/migrations/run-pipeline-recovery-migration.mjs",
+    "seed:content-quality": "node scripts/seed-content-quality.mjs",
+    "backfill:wp-inventory": "node scripts/run-wp-inventory-backfill.mjs",
     "test": "node --test lib/*.test.js",
     "test:gpt": "node test-gpt4.1.mjs"
   },
