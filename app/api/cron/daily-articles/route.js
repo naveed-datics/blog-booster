@@ -3,6 +3,7 @@ import { query } from "@/lib/db";
 import { isInvocationTimeout } from "@/lib/articlePipeline";
 import { getDailyNewLimit, getDailyUpdateLimit } from "@/lib/pipelineConfig";
 import { loadRecoveryLoosenedFromDb } from "@/lib/gscRecoverySignal";
+import { getCronBaseUrl } from "@/lib/productionBaseUrl";
 
 export const maxDuration = 300;
 
