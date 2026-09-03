@@ -170,16 +170,38 @@ export async function POST(request) {
 
       if (shouldRunCreateNewGates(resolved) && !skipGates) {
         let gateEvidence = null;
+        let alreadyInRisingBatch = false;
         const trendId = await resolveTrendId();
         if (trendId) {
           const tr = await query(
-            `SELECT gate_evidence FROM trends WHERE id = $1`,
+            `SELECT gate_evidence, created_at FROM trends WHERE id = $1`,
             [trendId]
           );
-          gateEvidence = tr.rows[0]?.gate_evidence || null;
+          const row = tr.rows[0];
+          gateEvidence = row?.gate_evidence || null;
+          if (row?.created_at) {
+            const ageMs = Date.now() - new Date(row.created_at).getTime();
+            alreadyInRisingBatch = ageMs <= 24 * 60 * 60 * 1000;
+          }
+          // Stale failed timeliness from the old double-check should not block
+          // when this name was already ingested from a rising-trends batch.
+          if (
+            alreadyInRisingBatch &&
+            gateEvidence?.trending24h &&
+            gateEvidence.trending24h.passed === false
+          ) {
+            gateEvidence = {
+              ...gateEvidence,
+              trending24h: {
+                passed: true,
+                reason: 'discovered from rising trends batch (override stale fail)',
+              },
+            };
+          }
         }
         const gates = await runPipelineGates(celebrityName, {
           gateEvidence: gateEvidence || undefined,
+          alreadyInRisingBatch,
         });
         steps.push({ step: "Pipeline gates", status: "completed", data: gates });
         if (!gates.passed) {

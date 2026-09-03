@@ -122,12 +122,40 @@ export default function AIDashboardPage() {
         body: JSON.stringify({ id, action }),
       });
       const data = await res.json();
-      if (res.ok && data.success) {
-        toast.success(action === "approve" ? "Approved for processing" : "Rejected");
-        fetchReviewQueue();
-      } else {
+      if (!res.ok || !data.success) {
         toast.error(data.error || "Action failed");
+        return;
       }
+
+      if (action === "approve" && data.item?.celebrity_name) {
+        toast.success(`Approved — generating ${data.item.celebrity_name}…`);
+        const genRes = await fetch("/api/generate-article", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            celebrityName: data.item.celebrity_name,
+            websiteId: parseInt(websiteId, 10),
+            trendId: data.item.trend_id || null,
+            skipGates: true,
+            pipelineActionOverride: data.item.proposed_action || "create-new",
+          }),
+        });
+        const genData = await genRes.json();
+        if (genRes.ok && genData.success) {
+          toast.success(`Published: ${data.item.celebrity_name}`);
+        } else if (genData.deferred) {
+          toast.warning(`Deferred (quota): ${genData.defer_reason || "try later"}`);
+        } else {
+          toast.error(
+            genData.error ||
+              genData.skip_reason?.detail ||
+              "Generate failed after approve"
+          );
+        }
+      } else {
+        toast.success(action === "approve" ? "Approved" : "Rejected");
+      }
+      fetchReviewQueue();
     } catch {
       toast.error("Action failed");
     }

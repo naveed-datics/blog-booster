@@ -276,7 +276,9 @@ async function saveTrendsToDatabase(searchQuery, trendsResult, celebList, result
             if (lookup.url) existingUrl = lookup.url;
 
             if (resolved.action === 'create-new') {
-              const gates = await runPipelineGates(cleanCelebName);
+              const gates = await runPipelineGates(cleanCelebName, {
+                alreadyInRisingBatch: true,
+              });
               gateEvidenceJson = gates.evidence;
               if (!gates.passed) {
                 await query(
