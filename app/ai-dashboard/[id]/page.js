@@ -1638,14 +1638,26 @@ export default function AIDashboardPage() {
                       <TableRow>
                         <TableHead>Run (started)</TableHead>
                         <TableHead>Status</TableHead>
-                        <TableHead>New Articles</TableHead>
-                        <TableHead>Refreshed</TableHead>
+                        <TableHead>Creates</TableHead>
+                        <TableHead>Updates</TableHead>
                         <TableHead>Trends Found</TableHead>
+                        <TableHead>Guarantee</TableHead>
                         <TableHead></TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {cronLogs.map((log) => (
+                      {cronLogs.map((log) => {
+                        const s = log.summary || {};
+                        const creates =
+                          s.auto_generate?.creates_succeeded ??
+                          log.new_articles_count;
+                        const updates =
+                          s.auto_generate?.updates_succeeded ??
+                          log.refreshed_articles_count;
+                        const guaranteeMet =
+                          s.daily_guarantee_met ??
+                          (Number(creates) + Number(updates) >= 1);
+                        return (
                         <>
                           <TableRow key={log.id}>
                             <TableCell className="whitespace-nowrap">
@@ -1658,9 +1670,16 @@ export default function AIDashboardPage() {
                                 <span className="text-red-600 font-medium">Error</span>
                               )}
                             </TableCell>
-                            <TableCell>{log.new_articles_count}</TableCell>
-                            <TableCell>{log.refreshed_articles_count}</TableCell>
+                            <TableCell>{creates}</TableCell>
+                            <TableCell>{updates}</TableCell>
                             <TableCell>{log.trends_found_count}</TableCell>
+                            <TableCell>
+                              {guaranteeMet ? (
+                                <span className="text-green-600 text-xs font-medium">Met</span>
+                              ) : (
+                                <span className="text-amber-600 text-xs font-medium">Missed</span>
+                              )}
+                            </TableCell>
                             <TableCell>
                               <Button
                                 variant="ghost"
@@ -1677,10 +1696,15 @@ export default function AIDashboardPage() {
                           </TableRow>
                           {expandedLogId === log.id && (
                             <TableRow key={`${log.id}-details`}>
-                              <TableCell colSpan={6}>
+                              <TableCell colSpan={7}>
                                 {log.error_message && (
                                   <p className="text-sm text-red-600 mb-2">
                                     {log.error_message}
+                                  </p>
+                                )}
+                                {s.warning && (
+                                  <p className="text-sm text-amber-600 mb-2">
+                                    {s.warning}
                                   </p>
                                 )}
                                 <pre className="text-xs bg-muted p-3 rounded-md overflow-x-auto whitespace-pre-wrap">
@@ -1690,7 +1714,8 @@ export default function AIDashboardPage() {
                             </TableRow>
                           )}
                         </>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>

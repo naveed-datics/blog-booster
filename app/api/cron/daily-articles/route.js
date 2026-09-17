@@ -31,6 +31,14 @@ const ENSURE_TABLE_SQL = `
 async function logRun(summary) {
   try {
     await query(ENSURE_TABLE_SQL);
+    const creates =
+      summary.auto_generate?.creates_succeeded ??
+      summary.auto_generate?.succeeded ??
+      0;
+    const updates =
+      summary.auto_generate?.updates_succeeded ??
+      summary.refresh_stale?.updated ??
+      0;
     await query(
       `INSERT INTO cron_run_logs
         (website_id, started_at, finished_at, success, error_message,
@@ -42,8 +50,8 @@ async function logRun(summary) {
         summary.finished_at,
         !summary.error,
         summary.error,
-        summary.auto_generate?.succeeded ?? 0,
-        summary.refresh_stale?.updated ?? 0,
+        creates,
+        updates,
         summary.trend_search?.saved_count ?? 0,
         JSON.stringify(summary),
       ]
@@ -159,6 +167,7 @@ export async function GET(request) {
         websiteId: TARGET_WEBSITE_ID,
         limit: newLimit,
         updateLimit,
+        dailyGuarantee: true,
       }),
     });
 
@@ -240,6 +249,20 @@ export async function GET(request) {
   }
 
   summary.finished_at = new Date().toISOString();
+  summary.daily_guarantee_met = Boolean(
+    summary.auto_generate?.daily_guarantee_met ||
+      (summary.auto_generate?.succeeded ?? 0) >= 1
+  );
+  if (
+    !summary.error &&
+    summary.auto_generate &&
+    !summary.auto_generate.timeout &&
+    !summary.daily_guarantee_met
+  ) {
+    summary.warning =
+      "Daily guarantee not met — 0 successful WP publishes this run";
+    console.warn("[cron/daily-articles]", summary.warning);
+  }
   console.log("[cron/daily-articles] Summary:", JSON.stringify(summary));
 
   await logRun(summary);

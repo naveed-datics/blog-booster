@@ -88,6 +88,7 @@ export async function POST(request) {
     let deferredPublish = false;
     let draftSaved = false;
     let pipelineTrendId = requestedTrendId || null;
+    let pipelineAction = null;
 
     const cookies = request.headers.get("cookie") || "";
     const cronSecret = request.headers.get("x-cron-secret") || "";
@@ -219,7 +220,8 @@ export async function POST(request) {
         }
       }
 
-      const pipelineAction = resolved.action;
+      const pipelineActionResolved = resolved.action;
+      pipelineAction = pipelineActionResolved;
       const existingPostId = resolved.postId || lookup.postId;
 
       // Step 1: Find Sources
@@ -594,6 +596,7 @@ export async function POST(request) {
       skipped: skippedResult !== null,
       skip_reason: skippedResult,
       celebrityName,
+      pipeline_action: pipelineAction,
       draft_saved: draftSaved,
       deferred_publish: deferredPublish,
       steps,
