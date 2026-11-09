@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { runClaudeText, isClaudeLlmConfigured } from "@/lib/claudeLlm";
 import { query } from "@/lib/db";
 import { isAuthorized } from "@/lib/cronAuth";
 
@@ -176,35 +177,13 @@ export async function POST(request) {
       );
     }
 
-    // Check for OpenAI API key
-    const openaiApiKey = process.env.OPENAI_API_KEY;
-
-    // Get Azure OpenAI config (remove quotes if present)
-    let azureApiKey = process.env.AZURE_OPENAI_API_KEY;
-    let azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
-    let azureDeploymentName = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
-    let azureApiVersion =
-      process.env.AZURE_OPENAI_API_VERSION || "2024-12-01-preview";
-
-    // Remove quotes if present (common in .env files)
-    if (azureApiKey) azureApiKey = azureApiKey.replace(/^["']|["']$/g, "");
-    if (azureEndpoint)
-      azureEndpoint = azureEndpoint.replace(/^["']|["']$/g, "");
-    if (azureDeploymentName)
-      azureDeploymentName = azureDeploymentName.replace(/^["']|["']$/g, "");
-    if (azureApiVersion)
-      azureApiVersion = azureApiVersion.replace(/^["']|["']$/g, "");
-
-    // Use Azure OpenAI if configured, otherwise use standard OpenAI
-    const useAzure = azureApiKey && azureEndpoint && azureDeploymentName;
-
-    if (!useAzure && !openaiApiKey) {
+    if (!(await isClaudeLlmConfigured())) {
       return NextResponse.json(
         {
           error:
-            "OpenAI API key or Azure OpenAI configuration not found in environment variables",
+            "Claude LLM is not configured. Add the API key on the Settings page (/settings).",
         },
-        { status: 500 }
+        { status: 503 }
       );
     }
 
@@ -255,79 +234,15 @@ Write an SEO-friendly article in a natural, human tone. Use proper HTML heading 
     const systemPrompt =
       "You are an expert content writer specializing in well-sourced, fact-checked articles. Create REAL, engaging content based strictly on the provided context and confirmed answer. Never output template instructions or placeholder text. Every factual claim beyond the confirmed answer must carry its own inline <a href> citation to one of the provided source URLs - never cite a source by name without linking it, and never invent a source. Output only clean HTML markup with real content.";
 
+    // One article generation per call. The relay is asynchronous, so each
+    // call is a submit-then-poll round trip of roughly 10-20s; the retry
+    // path below calls this a second time only when the first output still
+    // has template leftovers.
     async function callModel(prompt) {
-      if (useAzure) {
-        const endpoint = azureEndpoint.replace(/\/$/, "");
-        const azureUrl = `${endpoint}/openai/deployments/${azureDeploymentName}/chat/completions?api-version=${azureApiVersion}`;
-
-        const response = await fetch(azureUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "api-key": azureApiKey,
-          },
-          body: JSON.stringify({
-            messages: [
-              { role: "system", content: systemPrompt },
-              { role: "user", content: prompt },
-            ],
-            temperature: 0.7,
-            top_p: 0.9,
-            presence_penalty: 0.3,
-            frequency_penalty: 0.2,
-            max_tokens: 4000,
-          }),
-        });
-
-        if (!response.ok) {
-          let errorMessage = `Azure OpenAI API error: ${response.status} ${response.statusText}`;
-          try {
-            const errorData = await response.json();
-            errorMessage = `Azure OpenAI API error: ${
-              errorData.error?.message || errorData.error?.code || response.statusText
-            }`;
-          } catch (e) {
-            const errorText = await response.text();
-            errorMessage = `Azure OpenAI API error: ${response.status} ${
-              response.statusText
-            }. ${errorText.substring(0, 200)}`;
-          }
-          throw new Error(errorMessage);
-        }
-
-        const data = await response.json();
-        return data.choices[0]?.message?.content || "";
-      }
-
-      const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${openaiApiKey}`,
-        },
-        body: JSON.stringify({
-          model: "gpt-4",
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: prompt },
-          ],
-          temperature: 0.7,
-          top_p: 0.9,
-          presence_penalty: 0.3,
-          frequency_penalty: 0.2,
-          max_tokens: 4000,
-        }),
+      return runClaudeText({
+        instructions: systemPrompt,
+        text: prompt,
       });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(
-          `OpenAI API error: ${errorData.error?.message || response.statusText}`
-        );
-      }
-
-      const data = await response.json();
-      return data.choices[0]?.message?.content || "";
     }
 
     function cleanUpOutput(raw) {

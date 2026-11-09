@@ -19,7 +19,9 @@
     "seed:content-quality": "node scripts/seed-content-quality.mjs",
     "backfill:wp-inventory": "node scripts/run-wp-inventory-backfill.mjs",
     "test": "node --test lib/*.test.js",
-    "test:gpt": "node test-gpt4.1.mjs"
+    "test:gpt": "node test-gpt4.1.mjs",
+    "migrate:app-settings": "node lib/migrations/run-app-settings-migration.mjs",
+    "settings:import-env": "node scripts/import-env-to-settings.mjs"
   },
   "dependencies": {
     "@copilotkit/react-core": "^1.50.1",

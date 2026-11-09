@@ -7,16 +7,14 @@ import {
   schedulePublishRetry,
 } from "@/lib/articleDrafts";
 import { getCronBaseUrl } from "@/lib/productionBaseUrl";
+import { isCronBearerAuthorized } from "@/lib/cronAuth";
 
 export const maxDuration = 120;
 
 const PUBLISH_RETRY_LIMIT = 2;
 
 export async function GET(request) {
-  const cronSecret = process.env.CRON_SECRET;
-  const authHeader = request.headers.get("authorization") || "";
-
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+  if (!(await isCronBearerAuthorized(request))) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

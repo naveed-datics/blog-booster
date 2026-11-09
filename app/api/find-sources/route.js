@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { isAuthorized } from '@/lib/cronAuth';
+import { getSetting } from '@/lib/settings';
 
 // Comprehensive Religion LSI Words Dictionary
 const RELIGION_LSI_WORDS = {
@@ -177,11 +178,11 @@ export async function GET(request) {
       );
     }
 
-    const apiKey = process.env.TAVILY_API_KEY;
+    const apiKey = await getSetting('TAVILY_API_KEY');
 
     if (!apiKey) {
       return NextResponse.json(
-        { error: 'TAVILY_API_KEY not found in environment variables' },
+        { error: 'TAVILY_API_KEY is not configured. Add it on the Settings page.' },
         { status: 500 }
       );
     }

@@ -1,15 +1,10 @@
 import { NextResponse } from 'next/server';
-import { isAuthorized } from '@/lib/cronAuth';
+import { isAuthorized, isCronBearerAuthorized } from '@/lib/cronAuth';
 import { evaluateGscRecoverySignal } from '@/lib/gscRecoverySignal';
 
 export async function GET(request) {
-  const cronSecret = process.env.CRON_SECRET;
-  const authHeader = request.headers.get('authorization') || '';
-
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-    if (!(await isAuthorized(request))) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+  if (!(await isCronBearerAuthorized(request)) && !(await isAuthorized(request))) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const { searchParams } = new URL(request.url);

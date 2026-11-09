@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isAuthorized } from "@/lib/cronAuth";
+import { isAuthorized, matchesCronSecret } from "@/lib/cronAuth";
 import {
   findTrendIdForCelebrity,
   markPublished,
@@ -18,10 +18,8 @@ import { query } from "@/lib/db";
 
 export const maxDuration = 300;
 
-function getBaseUrl(request) {
-  const cronSecret = process.env.CRON_SECRET;
-  const providedSecret = request.headers.get("x-cron-secret");
-  if (cronSecret && providedSecret && providedSecret === cronSecret) {
+async function getBaseUrl(request) {
+  if (await matchesCronSecret(request.headers.get("x-cron-secret"))) {
     return getCronBaseUrl();
   }
 
@@ -81,7 +79,7 @@ export async function POST(request) {
       );
     }
 
-    const baseUrl = getBaseUrl(request);
+    const baseUrl = await getBaseUrl(request);
     const steps = [];
     let finalResult = null;
     let skippedResult = null;

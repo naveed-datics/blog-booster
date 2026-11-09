@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { isAuthorized } from "@/lib/cronAuth";
+import { runClaudeJson, isClaudeLlmConfigured } from "@/lib/claudeLlm";
 
 // Extracts a structured, sourced answer to "what religion is X" from the
 // content already fetched by find-sources/fetch-content, BEFORE write-blog
@@ -9,21 +10,6 @@ import { isAuthorized } from "@/lib/cronAuth";
 // citation to open the article with, instead of asking it to infer both
 // the answer and its sourcing from a raw text blob at generation time.
 
-function getAzureConfig() {
-  let azureApiKey = process.env.AZURE_OPENAI_API_KEY;
-  let azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
-  let azureDeploymentName = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
-  let azureApiVersion =
-    process.env.AZURE_OPENAI_API_VERSION || "2024-12-01-preview";
-
-  if (azureApiKey) azureApiKey = azureApiKey.replace(/^["']|["']$/g, "");
-  if (azureEndpoint) azureEndpoint = azureEndpoint.replace(/^["']|["']$/g, "");
-  if (azureDeploymentName)
-    azureDeploymentName = azureDeploymentName.replace(/^["']|["']$/g, "");
-  if (azureApiVersion) azureApiVersion = azureApiVersion.replace(/^["']|["']$/g, "");
-
-  return { azureApiKey, azureEndpoint, azureDeploymentName, azureApiVersion };
-}
 
 function buildSystemPrompt() {
   return `You are a fact-extraction assistant. You are given scraped web content about a specific person and a list of the source URLs it came from. Your ONLY job is to determine, strictly from the provided content, whether that person's religion/faith is a matter of public record.
@@ -61,25 +47,6 @@ Scraped content from those sources:
 ${combinedContent}
 
 Determine whether ${celebrityName}'s religion is a matter of public record based strictly on the content above, and return the JSON described in your instructions.`;
-}
-
-function parseModelJson(raw) {
-  if (!raw) return null;
-  let text = raw.trim();
-  text = text.replace(/^```json\n?/i, "").replace(/^```\n?/, "").replace(/```$/, "").trim();
-  try {
-    return JSON.parse(text);
-  } catch {
-    const match = text.match(/\{[\s\S]*\}/);
-    if (match) {
-      try {
-        return JSON.parse(match[0]);
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  }
 }
 
 // Drops any citation whose sourceUrl isn't one of the URLs we actually
@@ -133,86 +100,27 @@ export async function POST(request) {
       );
     }
 
-    const openaiApiKey = process.env.OPENAI_API_KEY;
-    const { azureApiKey, azureEndpoint, azureDeploymentName, azureApiVersion } =
-      getAzureConfig();
-    const useAzure = azureApiKey && azureEndpoint && azureDeploymentName;
-
-    if (!useAzure && !openaiApiKey) {
+    if (!(await isClaudeLlmConfigured())) {
       return NextResponse.json(
         {
           error:
-            "OpenAI API key or Azure OpenAI configuration not found in environment variables",
+            "Claude LLM is not configured. Add the API key on the Settings page (/settings).",
         },
-        { status: 500 }
+        { status: 503 }
       );
     }
 
     const systemPrompt = buildSystemPrompt();
     const userPrompt = buildUserPrompt(celebrityName, combinedContent, sourceDetails);
 
-    let rawContent = "";
+    const parsed = await runClaudeJson({
+      instructions: systemPrompt,
+      text: userPrompt,
+    });
 
-    if (useAzure) {
-      const endpoint = azureEndpoint.replace(/\/$/, "");
-      const azureUrl = `${endpoint}/openai/deployments/${azureDeploymentName}/chat/completions?api-version=${azureApiVersion}`;
-
-      const response = await fetch(azureUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "api-key": azureApiKey,
-        },
-        body: JSON.stringify({
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          temperature: 0,
-          max_tokens: 1200,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Azure OpenAI API error: ${response.status}. ${errorText.substring(0, 200)}`);
-      }
-
-      const data = await response.json();
-      rawContent = data.choices[0]?.message?.content || "";
-    } else {
-      const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${openaiApiKey}`,
-        },
-        body: JSON.stringify({
-          model: "gpt-4",
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          temperature: 0,
-          max_tokens: 1200,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(
-          `OpenAI API error: ${errorData.error?.message || response.statusText}`
-        );
-      }
-
-      const data = await response.json();
-      rawContent = data.choices[0]?.message?.content || "";
-    }
-
-    const parsed = parseModelJson(rawContent);
-    if (!parsed) {
+    if (!parsed || typeof parsed !== "object") {
       return NextResponse.json(
-        { error: "Failed to parse answer-extraction response", raw: rawContent },
+        { error: "Failed to parse answer-extraction response" },
         { status: 502 }
       );
     }

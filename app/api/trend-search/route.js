@@ -1,15 +1,17 @@
 import { NextResponse } from 'next/server';
+import { runClaudeJson, isClaudeLlmConfigured } from '@/lib/claudeLlm';
 import { query } from '@/lib/db';
 import { lookupPerson } from '@/lib/personLookup';
 import { resolveAction } from '@/lib/personPageRouter';
 import { runPipelineGates } from '@/lib/pipelineGates';
+import { getSetting } from '@/lib/settings';
 
 // Helper function to get rising trends using SerpAPI (equivalent to get_rising_trends)
 async function getRisingTrends(searchQuery = 'religion') {
-  const apiKey = process.env.SERPAPI_KEY;
+  const apiKey = await getSetting('SERPAPI_KEY');
   
   if (!apiKey) {
-    console.error('Error: SERPAPI_KEY not found in environment variables');
+    console.error('Error: SERPAPI_KEY is not configured in Settings');
     return { formatted: [], raw: [] };
   }
 
@@ -86,7 +88,7 @@ async function getRisingTrends(searchQuery = 'religion') {
 // identifiable individual, not someone whose religion is a genuinely common
 // public question, not someone whose faith is actually publicly discussed,
 // or a historical figure with centuries of existing scholarship. Uses the
-// same Azure OpenAI call pattern as extractCelebrities() above - a cheap
+// same Claude LLM call pattern as extractCelebrities() below - a cheap
 // judgment call on the name alone, distinct from (and a cheaper backstop
 // to) the rigorous extract-answer step that later checks real fetched
 // content before writing.
@@ -94,28 +96,15 @@ async function screenTopics(names) {
   const candidates = names.filter(Boolean);
   if (candidates.length === 0) return {};
 
-  let azureApiKey = process.env.AZURE_OPENAI_API_KEY;
-  let azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
-  let azureDeploymentName = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
-  let azureApiVersion = process.env.AZURE_OPENAI_API_VERSION || '2024-12-01-preview';
-
-  if (azureApiKey) azureApiKey = azureApiKey.replace(/^["']|["']$/g, '');
-  if (azureEndpoint) azureEndpoint = azureEndpoint.replace(/^["']|["']$/g, '');
-  if (azureDeploymentName) azureDeploymentName = azureDeploymentName.replace(/^["']|["']$/g, '');
-  if (azureApiVersion) azureApiVersion = azureApiVersion.replace(/^["']|["']$/g, '');
-
-  if (!azureApiKey || !azureEndpoint || !azureDeploymentName) {
+  if (!(await isClaudeLlmConfigured())) {
     // No LLM configured - allow everything through; the existing
     // denylist/fragment filters already ran, and extract-answer will still
     // block anything with no sourced public answer later in the pipeline.
-    console.warn('Azure OpenAI not configured, skipping topic-gating screen');
+    console.warn('Claude LLM not configured, skipping topic-gating screen');
     return {};
   }
 
   try {
-    const endpoint = azureEndpoint.replace(/\/$/, '');
-    const azureUrl = `${endpoint}/openai/deployments/${azureDeploymentName}/chat/completions?api-version=${azureApiVersion}`;
-
     const systemPrompt = `You are a topic-selection gate for a site that publishes "What religion is X?" articles about public figures.
 
 For each name, decide whether it should be allowed:
@@ -131,32 +120,14 @@ Output ONLY a valid JSON object mapping each input name exactly as given to {"al
 
     const userPrompt = `Names to screen:\n${JSON.stringify(candidates)}`;
 
-    const response = await fetch(azureUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'api-key': azureApiKey },
-      body: JSON.stringify({
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        temperature: 0,
-        max_tokens: 1500,
-      }),
+    const parsed = await runClaudeJson({
+      instructions: systemPrompt,
+      text: userPrompt,
     });
 
-    if (!response.ok) {
-      console.error(`Topic-gating screen failed: ${response.status}`);
-      return {};
-    }
-
-    const data = await response.json();
-    let raw = data.choices[0]?.message?.content?.trim() || '{}';
-    raw = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-
-    const parsed = JSON.parse(raw);
-    return typeof parsed === 'object' && parsed !== null ? parsed : {};
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
   } catch (error) {
-    console.error('Error in topic-gating screen:', error);
+    console.error('Error in topic-gating screen:', error.message);
     // Fail open - allow through rather than block the whole batch on a
     // parse/network error; extract-answer is still a downstream backstop.
     return {};
@@ -347,30 +318,15 @@ async function saveTrendsToDatabase(searchQuery, trendsResult, celebList, result
   }
 }
 
-// Helper function to extract celebrity names using Azure OpenAI
+// Helper function to extract celebrity names using the Claude LLM relay.
 async function extractCelebrities(trendsResult) {
-  // Get Azure OpenAI configuration
-  let azureApiKey = process.env.AZURE_OPENAI_API_KEY;
-  let azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
-  let azureDeploymentName = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
-  let azureApiVersion = process.env.AZURE_OPENAI_API_VERSION || '2024-12-01-preview';
-
-  // Remove quotes if present (common in .env files)
-  if (azureApiKey) azureApiKey = azureApiKey.replace(/^["']|["']$/g, '');
-  if (azureEndpoint) azureEndpoint = azureEndpoint.replace(/^["']|["']$/g, '');
-  if (azureDeploymentName) azureDeploymentName = azureDeploymentName.replace(/^["']|["']$/g, '');
-  if (azureApiVersion) azureApiVersion = azureApiVersion.replace(/^["']|["']$/g, '');
-
-  if (!azureApiKey || !azureEndpoint || !azureDeploymentName) {
-    console.warn('Azure OpenAI not configured, extracting names manually');
+  if (!(await isClaudeLlmConfigured())) {
+    console.warn('Claude LLM not configured, extracting names manually');
     // Fallback: extract query part from formatted strings
     return extractNamesFromTrends(trendsResult.formatted);
   }
 
   try {
-    const endpoint = azureEndpoint.replace(/\/$/, '');
-    const azureUrl = `${endpoint}/openai/deployments/${azureDeploymentName}/chat/completions?api-version=${azureApiVersion}`;
-
     const systemPrompt = `You are a celebrity-name extraction assistant.
 
 You receive a list of trending search terms (for example: "1. Emil Bove +5000% *").
@@ -398,163 +354,109 @@ IMPORTANT:
 
     const userPrompt = `Analyze these trending search terms and extract celebrity names:\n${JSON.stringify(trendsResult.formatted)}`;
 
-    console.log('Using Azure OpenAI for celebrity extraction');
+    console.log('Using Claude LLM for celebrity extraction');
 
-    const response = await fetch(azureUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'api-key': azureApiKey
-      },
-      body: JSON.stringify({
-        messages: [
-          {
-            role: 'system',
-            content: systemPrompt
-          },
-          {
-            role: 'user',
-            content: userPrompt
-          }
-        ],
-        temperature: 0.3,
-        top_p: 0.9
-      })
+    const celebList = await runClaudeJson({
+      instructions: systemPrompt,
+      text: userPrompt,
     });
 
-    if (!response.ok) {
-      let errorMessage = `Azure OpenAI API error: ${response.status} ${response.statusText}`;
-      try {
-        const errorData = await response.json();
-        errorMessage = `Azure OpenAI API error: ${errorData.error?.message || errorData.error?.code || response.statusText}`;
-        console.error('Azure OpenAI error details:', errorData);
-      } catch (e) {
-        const errorText = await response.text();
-        console.error('Azure OpenAI error response:', errorText);
+    console.log('Parsed CelebList from LLM:', celebList);
+
+    if (Array.isArray(celebList)) {
+      // Check if all are null - if so, use fallback
+      const allNull = celebList.every(name => !name || name === null || name === '');
+      if (allNull) {
+        console.log('LLM returned all nulls, using fallback extraction');
+        return extractNamesFromTrends(trendsResult.formatted);
       }
-      throw new Error(errorMessage);
-    }
-
-    const data = await response.json();
-    let celebs = data.choices[0]?.message?.content?.trim() || '';
-
-    console.log('Azure OpenAI Raw Response:', celebs);
-
-    // Clean up the response
-    if (celebs.startsWith('"') && celebs.endsWith('"')) {
-      celebs = celebs.slice(1, -1);
-    }
-    
-    // Remove markdown code blocks if present
-    celebs = celebs.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    
-    // Remove any leading/trailing whitespace and newlines
-    celebs = celebs.trim();
-
-    try {
-      const celebList = JSON.parse(celebs);
-      console.log('Parsed CelebList from LLM:', celebList);
       
-      if (Array.isArray(celebList)) {
-        // Check if all are null - if so, use fallback
-        const allNull = celebList.every(name => !name || name === null || name === '');
-        if (allNull) {
-          console.log('LLM returned all nulls, using fallback extraction');
-          return extractNamesFromTrends(trendsResult.formatted);
+      // List of invalid terms that are NOT celebrity names
+      const invalidTerms = [
+        'main', 'true', 'what', 'who', 'where', 'when', 'why', 'how', 'which',
+        'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+        'this', 'that', 'these', 'those', 'it', 'its', 'they', 'them', 'their',
+        'religion', 'jeans', 'breakout', 'info', 'news', 'article', 'blog',
+        'iran', 'usa', 'uk', 'china', 'india', 'japan', 'germany', 'france',
+        'spain', 'italy', 'brazil', 'russia', 'canada', 'australia', 'mexico',
+        'korea', 'turkey', 'poland', 'netherlands', 'belgium', 'sweden',
+        'norway', 'denmark', 'finland', 'greece', 'portugal', 'israel', 'egypt',
+        'montenegro', 'indonesien', 'north korea', 'south korea', 'hong kong',
+        'taiwan', 'thailand', 'vietnam', 'indonesia', 'philippines', 'malaysia',
+        'singapore', 'bangladesh', 'pakistan', 'afghanistan', 'iraq', 'syria',
+        'lebanon', 'jordan', 'saudi', 'uae', 'qatar', 'kuwait', 'bahrain', 'oman',
+        'shakers', 'whoever', 'whatever', 'whenever', 'wherever', 'however',
+        // Additional explicit non-celebrity topics
+        'christianity', 'islam', 'hinduism', 'buddhism', 'judaism',
+        'sikhism', 'atheism', 'agnosticism',
+        'roman', 'roman empire',
+        'kyrgyzstan', 'egypt major'
+      ];
+      
+      // Filter out null, empty strings, and non-celebrity terms
+      // But keep the array length the same to match with trends
+      const processed = celebList.map(name => {
+        if (!name || typeof name !== 'string') return null;
+        const cleanName = name.trim();
+        
+        // Minimum length check
+        if (cleanName.length < 3) return null;
+        
+        // Filter out obvious non-celebrities
+        const lowerName = cleanName.toLowerCase();
+        const nameWords = lowerName.split(/\s+/).filter(Boolean);
+        const firstWord = nameWords[0] || '';
+        const lastWord = nameWords[nameWords.length - 1] || '';
+        // See the matching comment in saveTrendsToDatabase() above -
+        // question-fragment terms like "Is Christianity A" pass the
+        // exact-match invalidTerms check but aren't a person's name.
+        const FRAGMENT_START_WORDS = new Set([
+          'is', 'are', 'was', 'were', 'what', 'who', 'where', 'when', 'why',
+          'how', 'which', 'the', 'a', 'an', 'que', 'el', 'la', 'los', 'las',
+          'blog', 'cartula', 'does', 'do', 'can', 'should', 'will',
+        ]);
+        const FRAGMENT_END_WORDS = new Set([
+          'of', 'a', 'an', 'the', 'de', 'la', 'el', 'del', 'que', 'to', 'for',
+          'and', 'or', 'in', 'on', 'at',
+        ]);
+        const isFragment = FRAGMENT_START_WORDS.has(firstWord) || FRAGMENT_END_WORDS.has(lastWord);
+
+        const isInvalid = invalidTerms.includes(lowerName) ||
+          lowerName.includes('religion') ||
+          lowerName.includes('jeans') ||
+          lowerName.includes('breakout') ||
+          lowerName.includes('true religion') ||
+          lowerName.includes('what is') ||
+          lowerName.includes('what religion') ||
+          lowerName.includes('main religion') ||
+          lowerName.includes('whoever') ||
+          isFragment;
+
+        if (isInvalid) {
+          return null;
+        }
+
+        // Require at least two words (first + last name) to reduce generic single-word terms
+        const wordCount = cleanName.split(/\s+/).length;
+        if (wordCount < 2) {
+          return null;
         }
         
-        // List of invalid terms that are NOT celebrity names
-        const invalidTerms = [
-          'main', 'true', 'what', 'who', 'where', 'when', 'why', 'how', 'which',
-          'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
-          'this', 'that', 'these', 'those', 'it', 'its', 'they', 'them', 'their',
-          'religion', 'jeans', 'breakout', 'info', 'news', 'article', 'blog',
-          'iran', 'usa', 'uk', 'china', 'india', 'japan', 'germany', 'france',
-          'spain', 'italy', 'brazil', 'russia', 'canada', 'australia', 'mexico',
-          'korea', 'turkey', 'poland', 'netherlands', 'belgium', 'sweden',
-          'norway', 'denmark', 'finland', 'greece', 'portugal', 'israel', 'egypt',
-          'montenegro', 'indonesien', 'north korea', 'south korea', 'hong kong',
-          'taiwan', 'thailand', 'vietnam', 'indonesia', 'philippines', 'malaysia',
-          'singapore', 'bangladesh', 'pakistan', 'afghanistan', 'iraq', 'syria',
-          'lebanon', 'jordan', 'saudi', 'uae', 'qatar', 'kuwait', 'bahrain', 'oman',
-          'shakers', 'whoever', 'whatever', 'whenever', 'wherever', 'however',
-          // Additional explicit non-celebrity topics
-          'christianity', 'islam', 'hinduism', 'buddhism', 'judaism',
-          'sikhism', 'atheism', 'agnosticism',
-          'roman', 'roman empire',
-          'kyrgyzstan', 'egypt major'
-        ];
-        
-        // Filter out null, empty strings, and non-celebrity terms
-        // But keep the array length the same to match with trends
-        const processed = celebList.map(name => {
-          if (!name || typeof name !== 'string') return null;
-          const cleanName = name.trim();
-          
-          // Minimum length check
-          if (cleanName.length < 3) return null;
-          
-          // Filter out obvious non-celebrities
-          const lowerName = cleanName.toLowerCase();
-          const nameWords = lowerName.split(/\s+/).filter(Boolean);
-          const firstWord = nameWords[0] || '';
-          const lastWord = nameWords[nameWords.length - 1] || '';
-          // See the matching comment in saveTrendsToDatabase() above -
-          // question-fragment terms like "Is Christianity A" pass the
-          // exact-match invalidTerms check but aren't a person's name.
-          const FRAGMENT_START_WORDS = new Set([
-            'is', 'are', 'was', 'were', 'what', 'who', 'where', 'when', 'why',
-            'how', 'which', 'the', 'a', 'an', 'que', 'el', 'la', 'los', 'las',
-            'blog', 'cartula', 'does', 'do', 'can', 'should', 'will',
-          ]);
-          const FRAGMENT_END_WORDS = new Set([
-            'of', 'a', 'an', 'the', 'de', 'la', 'el', 'del', 'que', 'to', 'for',
-            'and', 'or', 'in', 'on', 'at',
-          ]);
-          const isFragment = FRAGMENT_START_WORDS.has(firstWord) || FRAGMENT_END_WORDS.has(lastWord);
-
-          const isInvalid = invalidTerms.includes(lowerName) ||
-            lowerName.includes('religion') ||
-            lowerName.includes('jeans') ||
-            lowerName.includes('breakout') ||
-            lowerName.includes('true religion') ||
-            lowerName.includes('what is') ||
-            lowerName.includes('what religion') ||
-            lowerName.includes('main religion') ||
-            lowerName.includes('whoever') ||
-            isFragment;
-
-          if (isInvalid) {
-            return null;
-          }
-
-          // Require at least two words (first + last name) to reduce generic single-word terms
-          const wordCount = cleanName.split(/\s+/).length;
-          if (wordCount < 2) {
-            return null;
-          }
-          
-          return cleanName;
-        });
-        
-        // If most are null (>80%), use fallback
-        const nullCount = processed.filter(n => !n).length;
-        if (nullCount > processed.length * 0.8) {
-          console.log(`Too many nulls from LLM (${nullCount}/${processed.length}), using fallback extraction`);
-          return extractNamesFromTrends(trendsResult.formatted);
-        }
-        
-        console.log('Processed CelebList:', processed);
-        return processed;
+        return cleanName;
+      });
+      
+      // If most are null (>80%), use fallback
+      const nullCount = processed.filter(n => !n).length;
+      if (nullCount > processed.length * 0.8) {
+        console.log(`Too many nulls from LLM (${nullCount}/${processed.length}), using fallback extraction`);
+        return extractNamesFromTrends(trendsResult.formatted);
       }
-    } catch (parseError) {
-      console.error('Error parsing celebrity list:', parseError);
-      console.log('Raw response:', celebs);
-      // Fallback: try to extract names from trend text
-      return extractNamesFromTrends(trendsResult.formatted);
+      
+      console.log('Processed CelebList:', processed);
+      return processed;
     }
 
-    // Fallback: try to extract names from trend text
+    // Model returned something other than an array - fall back.
     return extractNamesFromTrends(trendsResult.formatted);
   } catch (error) {
     console.error('Error extracting celebrities:', error);

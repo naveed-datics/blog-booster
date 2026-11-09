@@ -1,41 +1,13 @@
 "use client";
 
-import { SessionProvider, useSession } from "next-auth/react";
-import { CopilotKit } from "@copilotkit/react-core";
+import { SessionProvider } from "next-auth/react";
 import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
 
-function CopilotKitWrapper({ children }) {
-  const { data: session, status } = useSession();
-  
-  // Only render CopilotKit when authenticated
-  if (status === "loading") {
-    return (
-      <>
-        {children}
-        <Toaster />
-      </>
-    );
-  }
-
-  if (status === "authenticated" && session) {
-    return (
-      <CopilotKit runtimeUrl="/api/copilotkit">
-        {children}
-        <Toaster />
-      </CopilotKit>
-    );
-  }
-
-  // Not authenticated - render without CopilotKit
-  return (
-    <>
-      {children}
-      <Toaster />
-    </>
-  );
-}
-
+// The CopilotKit provider was removed along with Azure OpenAI: the Claude
+// LLM relay that replaced it is asynchronous and has no streaming
+// chat-completions surface, so there is no runtime for it to talk to.
+// Mounting it would have the client retry /api/copilotkit on every page.
 export function Providers({ children }) {
   return (
     <SessionProvider>
@@ -45,9 +17,9 @@ export function Providers({ children }) {
         enableSystem
         disableTransitionOnChange
       >
-        <CopilotKitWrapper>{children}</CopilotKitWrapper>
+        {children}
+        <Toaster />
       </ThemeProvider>
     </SessionProvider>
   );
 }
-

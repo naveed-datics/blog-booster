@@ -13,7 +13,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { LogIn, LogOut, User, Menu } from 'lucide-react';
+import { LogIn, LogOut, User, Menu, Settings } from 'lucide-react';
 import AuthModal from '@/components/AuthModal';
 
 export default function Navigation() {
@@ -90,6 +90,12 @@ export default function Navigation() {
                     <DropdownMenuItem asChild>
                       <Link href="/add-website" className="cursor-pointer">
                         Manage Websites
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/settings" className="cursor-pointer">
+                        <Settings className="mr-2 h-4 w-4" />
+                        Settings
                       </Link>
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />

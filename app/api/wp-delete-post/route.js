@@ -1,20 +1,8 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { query } from "@/lib/db";
+import { getWpBaseUrl, getWpAuthHeaders } from "@/lib/wpClient";
 
-const WP_BASE =
-  process.env.WP_BASE_URL || "https://whatreligionisinfo.com/wp-json/wp/v2";
-if (!process.env.WP_AUTH_HEADER) {
-  throw new Error(
-    "WP_AUTH_HEADER environment variable is not set. Refusing to fall back to a hardcoded credential."
-  );
-}
-const WP_AUTH_HEADER = process.env.WP_AUTH_HEADER;
-
-const wpHeaders = {
-  Authorization: WP_AUTH_HEADER,
-  Accept: "application/json",
-};
 
 function slugFromUrl(url) {
   try {
@@ -30,8 +18,8 @@ async function findPostIdBySlug(slug) {
   if (!slug) return null;
 
   const response = await fetch(
-    `${WP_BASE}/posts?slug=${encodeURIComponent(slug)}&status=any&per_page=1`,
-    { headers: wpHeaders }
+    `${await getWpBaseUrl()}/posts?slug=${encodeURIComponent(slug)}&status=any&per_page=1`,
+    { headers: await getWpAuthHeaders() }
   );
 
   if (!response.ok) {
@@ -51,8 +39,8 @@ async function findPostIdBySlug(slug) {
 }
 
 async function getFeaturedMediaId(postId) {
-  const response = await fetch(`${WP_BASE}/posts/${postId}`, {
-    headers: wpHeaders,
+  const response = await fetch(`${await getWpBaseUrl()}/posts/${postId}`, {
+    headers: await getWpAuthHeaders(),
   });
 
   if (!response.ok) {
@@ -66,8 +54,8 @@ async function getFeaturedMediaId(postId) {
 
 async function deleteWordPressPost(postId) {
   const response = await fetch(
-    `${WP_BASE}/posts/${postId}?force=true`,
-    { method: "DELETE", headers: wpHeaders }
+    `${await getWpBaseUrl()}/posts/${postId}?force=true`,
+    { method: "DELETE", headers: await getWpAuthHeaders() }
   );
 
   if (response.status === 404) {
@@ -86,8 +74,8 @@ async function deleteWordPressPost(postId) {
 
 async function deleteWordPressMedia(mediaId) {
   const response = await fetch(
-    `${WP_BASE}/media/${mediaId}?force=true`,
-    { method: "DELETE", headers: wpHeaders }
+    `${await getWpBaseUrl()}/media/${mediaId}?force=true`,
+    { method: "DELETE", headers: await getWpAuthHeaders() }
   );
 
   if (response.status === 404) {

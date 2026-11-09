@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
 import { isAuthorized } from '@/lib/cronAuth';
+import { getSetting } from '@/lib/settings';
 
 // REPLACEMENTS dictionary - converting business jargon to simpler language
 const REPLACEMENTS = {
@@ -478,18 +479,13 @@ export async function POST(request) {
     try {
       let aiOutput = '';
 
-      // Prefer dedicated humanizer key + GitHub Models endpoint (gpt-4.1) if configured
-      let humanizeApiKey =
-        process.env.HUMANIZE_OPENAI_API_KEY ;
-      let humanizeBaseUrl =
-        process.env.HUMANIZE_OPENAI_BASE_URL;
+      // Dedicated humanizer key + OpenAI-compatible endpoint, from Settings.
+      const humanizeApiKey = await getSetting('HUMANIZE_OPENAI_API_KEY');
+      const humanizeBaseUrl =
+        (await getSetting('HUMANIZE_OPENAI_BASE_URL')) ||
+        'https://models.github.ai/inference';
 
       if (humanizeApiKey) {
-        // Clean quotes if present
-        humanizeApiKey = humanizeApiKey.replace(/^["']|["']$/g, '');
-        if (humanizeBaseUrl) {
-          humanizeBaseUrl = humanizeBaseUrl.replace(/^["']|["']$/g, '');
-        }
 
         console.log('Humanize Locally: Using Replacement :', localResult);
         const url = `${humanizeBaseUrl.replace(/\/$/, '')}/v1/chat/completions`;

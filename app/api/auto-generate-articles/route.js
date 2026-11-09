@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { query } from "@/lib/db";
-import { isAuthorized } from "@/lib/cronAuth";
+import { isAuthorized, matchesCronSecret } from "@/lib/cronAuth";
 import { ensureArticleDraftsTable } from "@/lib/articleDrafts";
 import { isInvocationTimeout } from "@/lib/articlePipeline";
 import { getCronBaseUrl } from "@/lib/productionBaseUrl";
@@ -23,10 +23,8 @@ function looksLikeQuotaError(text) {
   );
 }
 
-function getBaseUrl(request) {
-  const cronSecret = process.env.CRON_SECRET;
-  const providedSecret = request.headers.get("x-cron-secret");
-  if (cronSecret && providedSecret && providedSecret === cronSecret) {
+async function getBaseUrl(request) {
+  if (await matchesCronSecret(request.headers.get("x-cron-secret"))) {
     return getCronBaseUrl();
   }
 
@@ -349,7 +347,7 @@ export async function POST(request) {
       });
     }
 
-    const baseUrl = getBaseUrl(request);
+    const baseUrl = await getBaseUrl(request);
     const cookies = request.headers.get("cookie") || "";
     const cronSecret = request.headers.get("x-cron-secret") || "";
     const results = [];

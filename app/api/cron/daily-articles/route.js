@@ -4,6 +4,7 @@ import { isInvocationTimeout } from "@/lib/articlePipeline";
 import { getDailyNewLimit, getDailyUpdateLimit } from "@/lib/pipelineConfig";
 import { loadRecoveryLoosenedFromDb } from "@/lib/gscRecoverySignal";
 import { getCronBaseUrl } from "@/lib/productionBaseUrl";
+import { isCronBearerAuthorized } from "@/lib/cronAuth";
 
 export const maxDuration = 300;
 
@@ -73,10 +74,10 @@ async function logRun(summary) {
 // without ever needing a login session.
 
 // Recovery-aware limits (see lib/pipelineConfig.js + lib/publishQuota.js).
-function getDailyLimits() {
+async function getDailyLimits() {
   return {
-    newLimit: getDailyNewLimit(),
-    updateLimit: getDailyUpdateLimit(),
+    newLimit: await getDailyNewLimit(),
+    updateLimit: await getDailyUpdateLimit(),
   };
 }
 const TARGET_WEBSITE_ID = 1; // whatreligionisinfo.com
@@ -119,10 +120,7 @@ async function parseJsonOrThrow(response, label) {
 }
 
 export async function GET(request) {
-  const cronSecret = process.env.CRON_SECRET;
-  const authHeader = request.headers.get("authorization") || "";
-
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+  if (!(await isCronBearerAuthorized(request))) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -139,7 +137,7 @@ export async function GET(request) {
 
   try {
     await loadRecoveryLoosenedFromDb(TARGET_WEBSITE_ID);
-    const { newLimit, updateLimit } = getDailyLimits();
+    const { newLimit, updateLimit } = await getDailyLimits();
 
     // Step 1: pull fresh trending celebrities into the processing queue.
     const trendSearchUrl = `${baseUrl}/api/trend-search?q=religion&website_id=${TARGET_WEBSITE_ID}`;

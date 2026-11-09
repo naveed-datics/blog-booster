@@ -2,10 +2,12 @@ import { NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { auth } from '@/lib/auth';
+import { getSetting } from '@/lib/settings';
 
 // Helper function to validate if a name is a celebrity using LLM
 async function validateCelebrityName(name) {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  const apiKey =
+    (await getSetting('GEMINI_API_KEY')) || (await getSetting('GOOGLE_API_KEY'));
   
   if (!apiKey || !name || name.trim() === '') {
     return false;
