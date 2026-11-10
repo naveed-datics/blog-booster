@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
-import { isAuthorized } from '@/lib/cronAuth';
+import { isPipelineAuthorized } from '@/lib/cronAuth';
 import { getSetting } from '@/lib/settings';
 
 // REPLACEMENTS dictionary - converting business jargon to simpler language
@@ -452,7 +452,7 @@ function humanizeHtml(html) {
 export async function POST(request) {
   try {
     // Check authentication
-    if (!(await isAuthorized(request))) {
+    if (!(await isPipelineAuthorized(request))) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }

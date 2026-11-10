@@ -21,7 +21,8 @@
     "test": "node --test lib/*.test.js",
     "test:gpt": "node test-gpt4.1.mjs",
     "migrate:app-settings": "node lib/migrations/run-app-settings-migration.mjs",
-    "settings:import-env": "node scripts/import-env-to-settings.mjs"
+    "settings:import-env": "node scripts/import-env-to-settings.mjs",
+    "migrate:api-keys": "node lib/migrations/run-api-keys-migration.mjs"
   },
   "dependencies": {
     "@copilotkit/react-core": "^1.50.1",

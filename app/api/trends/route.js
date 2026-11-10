@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { auth } from '@/lib/auth';
 import { getSetting } from '@/lib/settings';
+import { isPipelineAuthorized } from '@/lib/cronAuth';
 
 // Helper function to validate if a name is a celebrity using LLM
 async function validateCelebrityName(name) {
@@ -38,9 +38,8 @@ Return ONLY "true" if it is a celebrity name, or "false" if it is not (e.g., cou
 // GET endpoint to fetch saved trends from database
 export async function GET(request) {
   try {
-    // Check authentication
-    const session = await auth();
-    if (!session || !session.user) {
+    // Session, cron secret, or a shareable API key.
+    if (!(await isPipelineAuthorized(request))) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }

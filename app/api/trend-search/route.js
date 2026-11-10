@@ -514,8 +514,8 @@ function extractNamesFromTrends(formattedTrends) {
 
 export async function GET(request) {
   try {
-    const { isAuthorized } = await import('@/lib/cronAuth');
-    if (!(await isAuthorized(request))) {
+    const { isPipelineAuthorized } = await import('@/lib/cronAuth');
+    if (!(await isPipelineAuthorized(request))) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }

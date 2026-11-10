@@ -7,6 +7,8 @@ import { toast } from 'sonner';
 import { Save, Loader2, Lock, Zap, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { SettingsGroup } from '@/components/settings/SettingsGroup';
+import { ApiKeyManager } from '@/components/settings/ApiKeyManager';
+import { ApiEndpointDocs } from '@/components/settings/ApiEndpointDocs';
 
 export default function SettingsPage() {
   const { data: session, status } = useSession();
@@ -208,6 +210,12 @@ export default function SettingsPage() {
               )}
             </SettingsGroup>
           ))}
+
+          <ApiKeyManager />
+
+          <ApiEndpointDocs
+            baseUrl={settings.NEXT_PUBLIC_BASE_URL?.value || ''}
+          />
 
           <section
             aria-labelledby="settings-bootstrap"

@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
-import { isAuthorized } from '@/lib/cronAuth';
+import { isPipelineAuthorized } from '@/lib/cronAuth';
 
 // POST endpoint to fetch content from multiple URLs
 export async function POST(request) {
   try {
     // Check authentication
-    if (!(await isAuthorized(request))) {
+    if (!(await isPipelineAuthorized(request))) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }
@@ -151,7 +151,7 @@ export async function POST(request) {
 export async function GET(request) {
   try {
     // Check authentication
-    if (!(await isAuthorized(request))) {
+    if (!(await isPipelineAuthorized(request))) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }

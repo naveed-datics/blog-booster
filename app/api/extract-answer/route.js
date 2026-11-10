@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isAuthorized } from "@/lib/cronAuth";
+import { isPipelineAuthorized } from "@/lib/cronAuth";
 import { runClaudeJson, isClaudeLlmConfigured } from "@/lib/claudeLlm";
 
 // Extracts a structured, sourced answer to "what religion is X" from the
@@ -80,7 +80,7 @@ function sanitizeAgainstKnownSources(extracted, sourceDetails) {
 
 export async function POST(request) {
   try {
-    if (!(await isAuthorized(request))) {
+    if (!(await isPipelineAuthorized(request))) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 

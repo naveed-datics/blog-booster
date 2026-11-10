@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { isAuthorized } from '@/lib/cronAuth';
+import { isPipelineAuthorized } from '@/lib/cronAuth';
 import { getSetting } from '@/lib/settings';
 
 // GET endpoint for image search using Tavily
 export async function GET(request) {
   try {
     // Check authentication
-    if (!(await isAuthorized(request))) {
+    if (!(await isPipelineAuthorized(request))) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }

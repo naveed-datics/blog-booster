@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { runClaudeText, isClaudeLlmConfigured } from "@/lib/claudeLlm";
 import { query } from "@/lib/db";
-import { isAuthorized } from "@/lib/cronAuth";
+import { isPipelineAuthorized } from "@/lib/cronAuth";
 
 // Function to inject content quality guidelines into prompt template
 function injectQualityGuidelines(promptTemplate) {
@@ -104,7 +104,7 @@ Rules that apply to the whole article:
 export async function POST(request) {
   try {
     // Check authentication
-    if (!(await isAuthorized(request))) {
+    if (!(await isPipelineAuthorized(request))) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
