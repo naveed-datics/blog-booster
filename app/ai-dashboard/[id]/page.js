@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter, useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -73,6 +73,7 @@ export default function AIDashboardPage() {
   const [createArticleDeleting, setCreateArticleDeleting] = useState(false);
   const [cronLogs, setCronLogs] = useState([]);
   const [cronLogsLoading, setCronLogsLoading] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [expandedLogId, setExpandedLogId] = useState(null);
   const [reviewItems, setReviewItems] = useState([]);
   const [reviewLoading, setReviewLoading] = useState(false);
@@ -128,7 +129,7 @@ export default function AIDashboardPage() {
       }
 
       if (action === "approve" && data.item?.celebrity_name) {
-        toast.success(`Approved — generating ${data.item.celebrity_name}…`);
+        toast.success(`Approved, generating ${data.item.celebrity_name}...`);
         const genRes = await fetch("/api/generate-article", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -381,6 +382,148 @@ export default function AIDashboardPage() {
         allIds.forEach(id => newSet.add(id));
         return newSet;
       });
+    }
+  };
+
+  // The Processing and Update tabs are two views of the same trendingList.
+  // Hoisted out of the table render so the "Delete all" buttons in each tab
+  // header act on exactly the rows that tab displays.
+  const processingTrends = useMemo(
+    () =>
+      trendingList.filter(
+        (trend) => trend.celebrity_name && !celebrityUrls[trend.celebrity_name]
+      ),
+    [trendingList, celebrityUrls]
+  );
+
+  const updateTrends = useMemo(
+    () =>
+      trendingList.filter((trend) => {
+        if (!trend.celebrity_name || !celebrityUrls[trend.celebrity_name]) {
+          return false;
+        }
+
+        const urlData = celebrityUrls[trend.celebrity_name];
+        const trendDate = new Date(trend.created_at);
+        const lastmodDate = urlData.lastmod ? new Date(urlData.lastmod) : null;
+
+        // lastmod is 7+ days older than the trend date
+        return (
+          lastmodDate &&
+          trendDate.getTime() - lastmodDate.getTime() >= 7 * 24 * 60 * 60 * 1000
+        );
+      }),
+    [trendingList, celebrityUrls]
+  );
+
+  // Bulk-delete the trends currently listed under a tab.
+  //
+  // The ids are passed explicitly rather than re-deriving the tab's filter
+  // server-side: Processing and Update are two client-side views of the same
+  // `trends` table, so a second definition of each filter could drift and
+  // delete rows the tab never displayed.
+  const handleDeleteAllTrends = async (trends, label) => {
+    if (trends.length === 0) return;
+
+    const confirmed = window.confirm(
+      `Delete all ${trends.length} ${label} ${
+        trends.length === 1 ? "item" : "items"
+      }? This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    const ids = trends.map((trend) => trend.id);
+
+    try {
+      setBulkDeleting(true);
+      const response = await fetch("/api/trends/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, website_id: websiteId }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to delete items");
+      }
+
+      const deletedIds = new Set(data.ids || ids);
+      setTrendingList((prev) => prev.filter((trend) => !deletedIds.has(trend.id)));
+      setSelectedItems((prev) => {
+        const next = new Set(prev);
+        trends.forEach((trend) => next.delete(trend.celebrity_name));
+        return next;
+      });
+      toast.success(`Deleted ${data.deleted} ${label} ${data.deleted === 1 ? "item" : "items"}`);
+    } catch (error) {
+      console.error("Error deleting trends:", error);
+      toast.error(error.message || "Failed to delete items");
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
+  // Clear this website's pending review queue.
+  const handleDeleteAllReview = async () => {
+    if (reviewItems.length === 0) return;
+
+    const confirmed = window.confirm(
+      `Delete all ${reviewItems.length} pending review ${
+        reviewItems.length === 1 ? "item" : "items"
+      }? This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    try {
+      setBulkDeleting(true);
+      const response = await fetch(`/api/review-queue?website_id=${websiteId}`, {
+        method: "DELETE",
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to clear review queue");
+      }
+
+      setReviewItems([]);
+      toast.success(`Deleted ${data.deleted} review ${data.deleted === 1 ? "item" : "items"}`);
+    } catch (error) {
+      console.error("Error clearing review queue:", error);
+      toast.error(error.message || "Failed to clear review queue");
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
+  // Clear this website's cron run history.
+  const handleDeleteAllCronLogs = async () => {
+    if (cronLogs.length === 0) return;
+
+    const confirmed = window.confirm(
+      `Delete all ${cronLogs.length} cron ${
+        cronLogs.length === 1 ? "log" : "logs"
+      }? This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    try {
+      setBulkDeleting(true);
+      const response = await fetch(`/api/cron-logs?website_id=${websiteId}`, {
+        method: "DELETE",
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to delete cron logs");
+      }
+
+      setCronLogs([]);
+      toast.success(`Deleted ${data.deleted} cron ${data.deleted === 1 ? "log" : "logs"}`);
+    } catch (error) {
+      console.error("Error deleting cron logs:", error);
+      toast.error(error.message || "Failed to delete cron logs");
+    } finally {
+      setBulkDeleting(false);
     }
   };
 
@@ -1162,13 +1305,23 @@ export default function AIDashboardPage() {
                 </div>
               )}
 
+              {processingTrends.length > 0 && (
+                <div className="flex justify-end mb-3">
+                  <Button
+                    onClick={() => handleDeleteAllTrends(processingTrends, "processing")}
+                    disabled={bulkDeleting}
+                    variant="outline"
+                    size="sm"
+                    className="flex items-center gap-2 text-red-600 hover:text-red-700 dark:text-red-400"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Delete all ({processingTrends.length})
+                  </Button>
+                </div>
+              )}
+
               {/* Processing Table */}
               {(() => {
-                const processingTrends = trendingList.filter(
-                  (trend) =>
-                    trend.celebrity_name && !celebrityUrls[trend.celebrity_name]
-                );
-
                 if (processingTrends.length === 0 && !searchingUrls) {
                   return (
                     <p className="text-gray-600 dark:text-gray-400 text-center py-8">
@@ -1304,29 +1457,23 @@ export default function AIDashboardPage() {
             </TabsContent>
 
             <TabsContent value="update">
+              {updateTrends.length > 0 && (
+                <div className="flex justify-end mb-3">
+                  <Button
+                    onClick={() => handleDeleteAllTrends(updateTrends, "update")}
+                    disabled={bulkDeleting}
+                    variant="outline"
+                    size="sm"
+                    className="flex items-center gap-2 text-red-600 hover:text-red-700 dark:text-red-400"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Delete all ({updateTrends.length})
+                  </Button>
+                </div>
+              )}
+
               {/* Update Table */}
               {(() => {
-                const updateTrends = trendingList.filter((trend) => {
-                  if (
-                    !trend.celebrity_name ||
-                    !celebrityUrls[trend.celebrity_name]
-                  )
-                    return false;
-
-                  const urlData = celebrityUrls[trend.celebrity_name];
-                  const trendDate = new Date(trend.created_at);
-                  const lastmodDate = urlData.lastmod
-                    ? new Date(urlData.lastmod)
-                    : null;
-
-                  // Check if lastmod is 7+ days older than trend date
-                  return (
-                    lastmodDate &&
-                    trendDate.getTime() - lastmodDate.getTime() >=
-                      7 * 24 * 60 * 60 * 1000
-                  );
-                });
-
                 if (updateTrends.length === 0) {
                   return (
                     <p className="text-gray-600 dark:text-gray-400 text-center py-8">
@@ -1539,7 +1686,7 @@ export default function AIDashboardPage() {
               <div className="flex justify-between items-center mb-3">
                 <div>
                   <p className="text-sm text-muted-foreground">
-                    Items that failed pipeline gates — approve to run generate-article with override.
+                    Items that failed pipeline gates. Approve to run generate-article with override.
                   </p>
                   {publishQuota && (
                     <p className="text-xs text-muted-foreground mt-1">
@@ -1548,16 +1695,30 @@ export default function AIDashboardPage() {
                     </p>
                   )}
                 </div>
-                <Button
-                  onClick={fetchReviewQueue}
-                  disabled={reviewLoading}
-                  variant="outline"
-                  size="sm"
-                  className="flex items-center gap-2"
-                >
-                  <RefreshCw className={`h-4 w-4 ${reviewLoading ? "animate-spin" : ""}`} />
-                  Refresh
-                </Button>
+                <div className="flex items-center gap-2">
+                  {reviewItems.length > 0 && (
+                    <Button
+                      onClick={handleDeleteAllReview}
+                      disabled={bulkDeleting || reviewLoading}
+                      variant="outline"
+                      size="sm"
+                      className="flex items-center gap-2 text-red-600 hover:text-red-700 dark:text-red-400"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete all ({reviewItems.length})
+                    </Button>
+                  )}
+                  <Button
+                    onClick={fetchReviewQueue}
+                    disabled={reviewLoading}
+                    variant="outline"
+                    size="sm"
+                    className="flex items-center gap-2"
+                  >
+                    <RefreshCw className={`h-4 w-4 ${reviewLoading ? "animate-spin" : ""}`} />
+                    Refresh
+                  </Button>
+                </div>
               </div>
 
               {reviewItems.length === 0 ? (
@@ -1581,7 +1742,7 @@ export default function AIDashboardPage() {
                         <TableRow key={item.id}>
                           <TableCell className="font-medium">{item.celebrity_name}</TableCell>
                           <TableCell>{item.failed_gate}</TableCell>
-                          <TableCell>{item.proposed_action || "—"}</TableCell>
+                          <TableCell>{item.proposed_action || "-"}</TableCell>
                           <TableCell>
                             {new Date(item.created_at).toLocaleDateString()}
                           </TableCell>
@@ -1615,16 +1776,30 @@ export default function AIDashboardPage() {
                 <p className="text-sm text-muted-foreground">
                   Results from each daily cron run (trend search, article generation, stale-article refresh).
                 </p>
-                <Button
-                  onClick={fetchCronLogs}
-                  disabled={cronLogsLoading}
-                  variant="outline"
-                  size="sm"
-                  className="flex items-center gap-2"
-                >
-                  <RefreshCw className={`h-4 w-4 ${cronLogsLoading ? "animate-spin" : ""}`} />
-                  Refresh
-                </Button>
+                <div className="flex items-center gap-2">
+                  {cronLogs.length > 0 && (
+                    <Button
+                      onClick={handleDeleteAllCronLogs}
+                      disabled={bulkDeleting || cronLogsLoading}
+                      variant="outline"
+                      size="sm"
+                      className="flex items-center gap-2 text-red-600 hover:text-red-700 dark:text-red-400"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete all ({cronLogs.length})
+                    </Button>
+                  )}
+                  <Button
+                    onClick={fetchCronLogs}
+                    disabled={cronLogsLoading}
+                    variant="outline"
+                    size="sm"
+                    className="flex items-center gap-2"
+                  >
+                    <RefreshCw className={`h-4 w-4 ${cronLogsLoading ? "animate-spin" : ""}`} />
+                    Refresh
+                  </Button>
+                </div>
               </div>
 
               {cronLogs.length === 0 ? (
@@ -1753,7 +1928,7 @@ export default function AIDashboardPage() {
         </div>
       </div>
 
-      {/* Create Article — keyword entry */}
+      {/* Create Article: keyword entry */}
       <Dialog
         open={createArticleDialogOpen}
         onOpenChange={(open) => {

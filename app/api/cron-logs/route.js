@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { query } from "@/lib/db";
 import { isAuthorized } from "@/lib/cronAuth";
+import { auth } from "@/lib/auth";
 
 const DEFAULT_LIMIT = 30;
 
@@ -45,6 +46,45 @@ export async function GET(request) {
     console.error("Error fetching cron run logs:", error);
     return NextResponse.json(
       { error: "Failed to fetch cron run logs", message: error.message },
+      { status: 500 }
+    );
+  }
+}
+
+// DELETE - Clear this website's cron run history.
+//
+// Session-only (not isAuthorized) so a shared pipeline API key cannot
+// destroy the run log it writes to.
+export async function DELETE(request) {
+  try {
+    const session = await auth();
+    if (!session || !session.user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const websiteId = parseInt(searchParams.get("website_id"), 10);
+
+    if (!Number.isInteger(websiteId) || websiteId <= 0) {
+      return NextResponse.json(
+        { error: "A numeric website_id is required" },
+        { status: 400 }
+      );
+    }
+
+    const result = await query(
+      "DELETE FROM cron_run_logs WHERE website_id = $1 RETURNING id",
+      [websiteId]
+    );
+
+    return NextResponse.json({
+      message: `Deleted ${result.rowCount} cron log(s)`,
+      deleted: result.rowCount,
+    });
+  } catch (error) {
+    console.error("Error deleting cron logs:", error);
+    return NextResponse.json(
+      { error: "Failed to delete cron logs", details: error.message },
       { status: 500 }
     );
   }
