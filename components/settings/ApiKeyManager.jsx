@@ -132,7 +132,7 @@ export function ApiKeyManager() {
           <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-900/20">
             <p className="flex items-center gap-2 text-sm font-semibold text-amber-900 dark:text-amber-200">
               <AlertTriangle className="h-4 w-4" />
-              Copy this key now — it will not be shown again
+              Copy this key now - it will not be shown again
             </p>
             <div className="mt-2 flex items-center gap-2">
               <code className="min-w-0 flex-1 overflow-x-auto rounded border border-amber-300 bg-white px-3 py-2 font-mono text-xs text-gray-900 dark:border-amber-700 dark:bg-gray-900 dark:text-gray-100">
@@ -148,7 +148,7 @@ export function ApiKeyManager() {
               onClick={() => setNewKey(null)}
               className="mt-2 text-xs font-medium text-amber-800 underline dark:text-amber-300"
             >
-              I&apos;ve saved it — dismiss
+              I&apos;ve saved it - dismiss
             </button>
           </div>
         )}

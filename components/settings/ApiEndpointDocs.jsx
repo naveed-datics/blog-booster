@@ -119,7 +119,7 @@ function EndpointCard({ endpoint, baseUrl }) {
                     ) : (
                       <span className="ml-1 text-gray-400">optional</span>
                     )}
-                    {' — '}
+                    {' - '}
                     {p.description}
                   </li>
                 ))}
@@ -142,7 +142,7 @@ function EndpointCard({ endpoint, baseUrl }) {
                     ) : (
                       <span className="ml-1 text-gray-400">optional</span>
                     )}
-                    {' — '}
+                    {' - '}
                     {p.description}
                   </li>
                 ))}

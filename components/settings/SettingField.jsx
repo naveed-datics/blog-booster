@@ -49,7 +49,7 @@ export function SettingField({ field, state, draft, onChange }) {
 
   const placeholder = isSecret
     ? configured
-      ? `Saved (${state.masked}) — type to replace`
+      ? `Saved (${state.masked}) - type to replace`
       : field.placeholder || 'Not set'
     : field.placeholder || '';
 
